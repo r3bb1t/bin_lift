@@ -1,35 +1,36 @@
 use inkwell::context::Context;
 use std::error::Error;
 use zydis::{FullInstruction, Mnemonic};
-
 use zydis2llvmir::compiler::Compiler;
 use zydis2llvmir::test_sequences;
 
-
+/// THis is an example of lifting some simple function to LLVM IR
+/// It simply lifts the following code
+/// ```cpp
+/// __int64 __fastcall add(int a, int b, int c)
+/// {
+///   j___CheckForDebuggerJustMyCode(&_5923EECC_simple_target_cpp);
+///   return (c + b + a);
+/// }
+/// ```
+///
+/// But the call to "j___CheckForDebuggerJustMyCode" is skipped for now
+///
+/// Right now you have to manually create a @main" function which invokes @protected to be able to
+/// compile the outputted llvm IR.
+/// Please, Use llvm 18
 fn main() -> Result<(), Box<dyn Error>> {
     let context = Context::create();
     let builder = context.create_builder();
     let module = context.create_module("new_protected");
 
     let mode = zydis::MachineMode::LONG_64;
-    let instructions =
-        test_sequences::decode_sample_bytes(&TEST_ADDITION_NOT_PATCHED_64, &mode)?;
+    let instructions = test_sequences::decode_sample_bytes(&TEST_ADDITION_NOT_PATCHED_64, &mode)?;
 
     let instructions: Vec<FullInstruction> = instructions
         .into_iter()
-        // .filter(|ins| ins.mnemonic == Mnemonic::PUSH)
-        .filter(|ins| ins.mnemonic != Mnemonic::RET)
         .filter(|ins| ins.mnemonic != Mnemonic::CALL)
         .collect();
-    // instructions.retain(|ins| ins.mnemonic != Mnemonic::LEA && ins.mnemonic != Mnemonic::CALL);
-    // dbg!(&instructions);
-
-    // let fmt = zydis::Formatter::intel();
-    // for ins in &instructions {
-    //     println!("{}", fmt.format(None, ins).unwrap());
-    //     // println!("{:?}", ins.meta.category)
-    // }
-    // todo!();
 
     let compiled = Compiler::compile(&context, &builder, &module, instructions, &mode)?;
 
@@ -61,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// pop rbp
 /// ret
 /// ```
-pub const TEST_ADDITION_NOT_PATCHED_64: [u8; 71] = [
+const TEST_ADDITION_NOT_PATCHED_64: [u8; 71] = [
     0x44, 0x89, 0x44, 0x24, 0x18, 0x89, 0x54, 0x24, 0x10, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x57, 0x48,
     0x81, 0xEC, 0xE8, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x6C, 0x24, 0x20, 0x48, 0x8D, 0x0D, 0x56, 0xF8,
     0x00, 0x00, 0xE8, 0xAA, 0xFB, 0xFF, 0xFF, 0x8B, 0x85, 0xE8, 0x00, 0x00, 0x00, 0x8B, 0x8D, 0xE0,

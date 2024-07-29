@@ -1,10 +1,13 @@
 use crate::lifter::LifterX86;
-use crate::util::{get_int_type, prep_regs_hashmap};
+use crate::miscellaneous::ExtendedRegister;
+use crate::util::get_int_type;
 use inkwell::builder::{Builder, BuilderError};
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::values::FunctionValue;
+use inkwell::types::BasicMetadataTypeEnum;
+use inkwell::values::{BasicValueEnum, FunctionValue};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use zydis::{Instruction, MachineMode, Operands, Register};
 
 pub struct Compiler<'a, 'ctx> {
@@ -13,6 +16,48 @@ pub struct Compiler<'a, 'ctx> {
     pub module: &'a Module<'ctx>,
     mode: &'a MachineMode,
 }
+
+const CPU_FLAGS: [ExtendedRegister; 17] = [
+    ExtendedRegister::CF,
+    ExtendedRegister::PF,
+    ExtendedRegister::AF,
+    ExtendedRegister::ZF,
+    ExtendedRegister::SF,
+    ExtendedRegister::TF,
+    ExtendedRegister::IF,
+    ExtendedRegister::DF,
+    ExtendedRegister::OF,
+    ExtendedRegister::IOPL,
+    ExtendedRegister::NT,
+    ExtendedRegister::RF,
+    ExtendedRegister::VM,
+    ExtendedRegister::AC,
+    ExtendedRegister::VIF,
+    ExtendedRegister::VIP,
+    ExtendedRegister::ID,
+];
+
+const ALL_REGS_IN_MIN_SIZE: [Register; 18] = [
+    Register::AX,
+    Register::BX,
+    Register::CX,
+    Register::DX,
+    Register::SI,
+    Register::DI,
+    Register::BP,
+    Register::SP,
+    Register::BP,
+    Register::R8B,
+    Register::R9B,
+    Register::R10B,
+    Register::R11B,
+    Register::R12B,
+    Register::R13B,
+    Register::R14B,
+    Register::R15B,
+    Register::IP,
+];
+
 impl<'a, 'ctx> Compiler<'a, 'ctx> {
     /// Compiles the specified `Function` in the given `Context` and using the specified `Builder` and `Module`.
     pub fn compile<O: Operands>(
@@ -55,7 +100,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         };
 
         for ins in instructions {
-            // println!("{} {:?}", ins.mnemonic, ins.meta.category);
             lifter.lift_instr(ins)?;
         }
 
@@ -65,29 +109,19 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     fn create_func(&self, mode: &MachineMode) -> FunctionValue<'ctx> {
         let example_reg = Register::AX.largest_enclosing(*mode); // random rax for convenience
         let int_type = get_int_type(self.context, &example_reg, mode);
-        let fn_type = self.context.void_type().fn_type(
-            &[
-                int_type.into(), // RAX
-                int_type.into(), // RBX
-                int_type.into(), // RCX
-                int_type.into(), // RDX
-                int_type.into(), // RSI
-                int_type.into(), // RDI
-                int_type.into(), // RBP
-                int_type.into(), // RSP
-                int_type.into(), // R8
-                int_type.into(), // R9
-                int_type.into(), // R10
-                int_type.into(), // R11
-                int_type.into(), // R12
-                int_type.into(), // R13
-                int_type.into(), // R14
-                int_type.into(), // R15
-                int_type.into(), // RFLAGS
-                int_type.into(), // RIP
-            ],
-            false,
-        );
+
+        const ARGS_COUNT: usize = ALL_REGS_IN_MIN_SIZE.len() + CPU_FLAGS.len();
+        let regs_args: [BasicMetadataTypeEnum; ALL_REGS_IN_MIN_SIZE.len()] =
+            core::array::from_fn(|_| int_type.into());
+
+        let flags_args: [BasicMetadataTypeEnum; CPU_FLAGS.len()] =
+            core::array::from_fn(|_| self.context.i8_type().into());
+
+        let mut args = Vec::with_capacity(ARGS_COUNT);
+        args.extend_from_slice(&regs_args);
+        args.extend_from_slice(&flags_args);
+
+        let fn_type = int_type.fn_type(&args, false);
         let fn_val = self.module.add_function("protected", fn_type, None);
 
         /// Inner function for converting register names
@@ -96,80 +130,44 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         }
 
         let mode = *self.mode;
-        // TODO: Replace with struct
-        fn_val
-            .get_nth_param(0)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::AX, mode));
-        fn_val
-            .get_nth_param(1)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::BX, mode));
-        fn_val
-            .get_nth_param(2)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::CX, mode));
-        fn_val
-            .get_nth_param(3)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::DX, mode));
-        fn_val
-            .get_nth_param(4)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::SI, mode));
-        fn_val
-            .get_nth_param(5)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::DI, mode));
-        fn_val
-            .get_nth_param(6)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::BP, mode));
-        fn_val
-            .get_nth_param(7)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::SP, mode));
-        fn_val
-            .get_nth_param(8)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::R8B, mode));
-        fn_val
-            .get_nth_param(9)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::R9B, mode));
-        fn_val
-            .get_nth_param(10)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::R10B, mode));
-        fn_val
-            .get_nth_param(11)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::R11B, mode));
-        fn_val
-            .get_nth_param(12)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::R12B, mode));
-        fn_val
-            .get_nth_param(13)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::R13B, mode));
-        fn_val
-            .get_nth_param(14)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::R14B, mode));
-        fn_val
-            .get_nth_param(15)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::R15B, mode));
-        fn_val
-            .get_nth_param(16)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::FLAGS, mode));
-        fn_val
-            .get_nth_param(17)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(Register::IP, mode));
+
+        // Set names for regular regs
+        for (id, reg) in ALL_REGS_IN_MIN_SIZE.into_iter().enumerate() {
+            fn_val
+                .get_nth_param(id as u32)
+                .unwrap()
+                .set_name(get_reg_name_for_mode(reg, mode));
+        }
+
+        // Set names for CPU flags
+        for (id, cpu_flag) in CPU_FLAGS.into_iter().enumerate() {
+            fn_val
+                .get_nth_param((ALL_REGS_IN_MIN_SIZE.len() + id) as u32)
+                .unwrap()
+                .set_name(&format!("{cpu_flag:?}"));
+        }
 
         fn_val
     }
+}
+
+/// After the function was created, use this one to store everything in a hashmap
+fn prep_regs_hashmap<'ctx>(
+    fn_val: &FunctionValue<'ctx>,
+    mode: &MachineMode,
+) -> HashMap<ExtendedRegister, BasicValueEnum<'ctx>> {
+    let mut registers_hashmap = HashMap::new();
+    let regs: [Register; 18] = ALL_REGS_IN_MIN_SIZE.map(|reg| reg.largest_enclosing(*mode));
+
+    for (id, reg) in regs.into_iter().enumerate() {
+        registers_hashmap.insert(reg.into(), fn_val.get_nth_param(id as u32).unwrap());
+    }
+    // Also insert flags separately
+    let mut last_index = regs.len() - 1;
+    for cpu_flag in CPU_FLAGS {
+        last_index += 1;
+        registers_hashmap.insert(cpu_flag, fn_val.get_nth_param(last_index as u32).unwrap());
+    }
+
+    registers_hashmap
 }

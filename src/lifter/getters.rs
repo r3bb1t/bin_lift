@@ -1,7 +1,8 @@
 use crate::lifter::{eOpConv, LifterX86};
+use crate::miscellaneous::ExtendedRegister;
 use crate::util::get_int_type;
 use inkwell::builder::BuilderError;
-use inkwell::values::{BasicValue, BasicValueEnum};
+use inkwell::values::{BasicValue, BasicValueEnum, IntValue};
 use inkwell::AddressSpace;
 use zydis::ffi::{DecodedOperand, DecodedOperandKind, MemoryInfo};
 use zydis::Register;
@@ -11,7 +12,7 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
         &self,
         operands: &[DecodedOperand],
         if_not_equal: eOpConv,
-    ) -> Result<(BasicValueEnum, BasicValueEnum), BuilderError> {
+    ) -> Result<[BasicValueEnum; 2], BuilderError> {
         let lhs = self.load_operand(&operands[0])?;
 
         let rhs = self.load_operand(&operands[1])?;
@@ -24,7 +25,7 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
             _ => unimplemented!(),
         };
 
-        Ok((lhs, rhs_final))
+        Ok([lhs, rhs_final])
     }
 
     pub fn load_operand(&self, operand: &DecodedOperand) -> Result<BasicValueEnum, BuilderError> {
@@ -38,9 +39,13 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
         })
     }
 
-    pub fn load_stack_pointer(&self) -> BasicValueEnum {
-        let sp = Register::SP.largest_enclosing(*self.mode);
-        self.load_reg(&sp).unwrap()
+    pub fn load_stack_pointer_reg(&self) -> Register {
+        Register::SP.largest_enclosing(*self.mode)
+    }
+
+    pub fn load_stack_pointer_value(&self) -> IntValue {
+        let sp = self.load_stack_pointer_reg();
+        self.load_reg(&sp).unwrap().into_int_value()
     }
 
     fn load_mem(&self, mem_info: &MemoryInfo) -> Result<BasicValueEnum, BuilderError> {
@@ -59,10 +64,7 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
         let value = self.context.i64_type().const_int(value, is_signed);
         BasicValueEnum::from(value)
     }
-    pub(in crate::lifter) fn load_reg(
-        &self,
-        register: &Register,
-    ) -> Result<BasicValueEnum, BuilderError> {
+    pub(crate) fn load_reg(&self, register: &Register) -> Result<BasicValueEnum, BuilderError> {
         let largest_enclosing = register.largest_enclosing(*self.mode);
         let context = self.context;
         let int_type = get_int_type(context, register, self.mode);
@@ -73,7 +75,7 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
         // }
 
         let regs_hashmap = self.regs_hashmap.borrow();
-        let cached_reg = regs_hashmap.get(&largest_enclosing).unwrap();
+        let cached_reg = regs_hashmap.get(&largest_enclosing.into()).unwrap();
 
         // Special handling of 8 bit upper registers
         if [Register::AH, Register::BH, Register::CH, Register::DH].contains(register) {
@@ -93,5 +95,9 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
             )?;
             Ok(BasicValueEnum::from(ret))
         }
+    }
+    pub(crate) fn load_flag(&self, cpu_flag: &ExtendedRegister) -> IntValue {
+        let regs_hashmap = self.regs_hashmap.borrow();
+        regs_hashmap.get(cpu_flag).unwrap().into_int_value()
     }
 }

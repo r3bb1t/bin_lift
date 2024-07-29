@@ -1,22 +1,24 @@
 use crate::lifter::LifterX86;
+use crate::miscellaneous::ExtendedRegister;
 use inkwell::builder::BuilderError;
-use inkwell::values::BasicValueEnum;
-use inkwell::AddressSpace;
+use inkwell::values::{BasicValueEnum, IntValue};
+use inkwell::{AddressSpace, IntPredicate};
 use zydis::ffi::{DecodedOperandKind, MemoryInfo};
 use zydis::Register;
 
 impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
-    pub fn store_op<T>(&self, op_kind: DecodedOperandKind, val: T)
+    pub fn store_op<T>(&self, op_kind: &DecodedOperandKind, val: T) -> Result<(), BuilderError>
     where
         BasicValueEnum<'b>: From<T>,
     {
         let val = BasicValueEnum::from(val);
         match op_kind {
-            DecodedOperandKind::Reg(reg) => self.store_reg(reg, val),
-            DecodedOperandKind::Mem(mem_info) => self.store_mem(mem_info, &val).unwrap(),
+            DecodedOperandKind::Reg(reg) => self.store_reg(*reg, val),
+            DecodedOperandKind::Mem(mem_info) => self.store_mem(mem_info.clone(), &val)?,
             DecodedOperandKind::Imm(_) | DecodedOperandKind::Unused => unreachable!(),
             _ => unimplemented!(),
-        }
+        };
+        Ok(())
     }
 
     fn store_mem(&self, mem_info: MemoryInfo, val: &BasicValueEnum) -> Result<(), BuilderError> {
@@ -33,7 +35,7 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
         Ok(())
     }
 
-    fn store_reg(&self, reg: Register, val: BasicValueEnum<'b>) {
+    pub(crate) fn store_reg(&self, reg: Register, val: BasicValueEnum<'b>) {
         let largest_enclosing = reg.largest_enclosing(*self.mode);
         let mut regs_hashmap = self.regs_hashmap.borrow_mut();
 
@@ -41,6 +43,87 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
         // let cached_size = cached.get_type();
         // let new_value = self.builder.build_load(cached_size,cached.into_pointer_value(), "" ).unwrap();
 
-        regs_hashmap.insert(largest_enclosing, val);
+        regs_hashmap.insert(largest_enclosing.into(), val);
     }
+
+    pub(crate) fn store_cpu_flag<T>(&self, cpu_flag: ExtendedRegister, val: T)
+    where
+        T: Into<BasicValueEnum<'b>>,
+    {
+        let mut regs_hashmap = self.regs_hashmap.borrow_mut();
+        regs_hashmap.insert(cpu_flag, val.into());
+    }
+
+    pub(crate) fn store_cpu_flag_bool(&'b self, cpu_flag: ExtendedRegister, val: bool) {
+        let bool_ty = &self.context.bool_type();
+        let value = match val {
+            true => bool_ty.const_int(1, false),
+            false => bool_ty.const_zero(),
+        };
+        let mut regs_hashmap = self.regs_hashmap.borrow_mut();
+        regs_hashmap.insert(cpu_flag, value.into());
+    }
+
+    // region:  flags related stuff stolen from retdec
+    #[allow(non_snake_case)]
+    pub(crate) fn storeRegistersPlusSflags(
+        &'b self,
+        sflagsVal: BasicValueEnum<'b>,
+        regs: &[(ExtendedRegister, IntValue<'b>)],
+    ) -> Result<(), BuilderError> {
+        for (reg, val) in regs {
+            self.store_cpu_flag(*reg, *val);
+        }
+
+        let sflagsVal_as_int = sflagsVal.into_int_value();
+        self.store_cpu_flag(
+            ExtendedRegister::ZF,
+            self.generateZeroFlag(sflagsVal_as_int)?,
+        );
+        self.store_cpu_flag(
+            ExtendedRegister::SF,
+            self.generateSignFlag(sflagsVal_as_int)?,
+        );
+        self.store_cpu_flag(
+            ExtendedRegister::PF,
+            self.generateParityFlag(sflagsVal_as_int)?,
+        );
+        Ok(())
+    }
+
+    #[allow(non_snake_case)]
+    fn generateZeroFlag(&self, val: IntValue<'b>) -> Result<IntValue, BuilderError> {
+        let zero = val.get_type().const_int(0, false);
+        self.builder
+            .build_int_compare(IntPredicate::EQ, val, zero, "")
+    }
+
+    #[allow(non_snake_case)]
+    fn generateSignFlag(&self, val: IntValue<'b>) -> Result<IntValue, BuilderError> {
+        let zero = val.get_type().const_int(0, false);
+        self.builder
+            .build_int_compare(IntPredicate::SLT, val, zero, "")
+    }
+
+    #[allow(non_snake_case)]
+    fn generateParityFlag(&self, val: IntValue<'b>) -> Result<IntValue, BuilderError> {
+        let builder = self.builder;
+        let i8t = self.context.i8_type();
+        let trunc = self.builder.build_int_truncate(val, i8t, "")?;
+        let f = inkwell::intrinsics::Intrinsic::find("llvm.ctpop")
+            .expect("Can't find 'llvm.ctpop' intrinsic while calculating Parity Flag (PF)");
+
+        let f_func = f.get_declaration(self.module, &[i8t.into()]).unwrap();
+        let c = builder.build_call(f_func, &[trunc.into()], "")?;
+
+        let c_retval = c.try_as_basic_value().left().unwrap().into_int_value();
+
+        let a = builder
+            // TODO: Check if "false" really fits
+            .build_and(c_retval, c_retval.get_type().const_int(1, false), "")?;
+
+        // TODO: Check if false fits here as well
+        builder.build_int_compare(IntPredicate::EQ, a, a.get_type().const_int(0, false), "")
+    }
+    // endregion:  flags related stuff stolen from retdec
 }

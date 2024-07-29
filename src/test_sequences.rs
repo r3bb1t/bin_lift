@@ -2,7 +2,6 @@
 
 use zydis::{AllOperands, Decoder, FullInstruction, MachineMode};
 
-
 /// ```assembly
 /// ADD RAX, RBX;
 /// ADD RCX, RAX;
@@ -10,7 +9,7 @@ use zydis::{AllOperands, Decoder, FullInstruction, MachineMode};
 /// ADD RBX, RDX;
 /// ```
 #[allow(unused)]
-pub const ADD_FOUR_TIMES_64_BIT_VALUES: [u8; 12] = [
+pub(super) const ADD_FOUR_TIMES_64_BIT_VALUES: [u8; 12] = [
     0x48, 0x01, 0xD8, 0x48, 0x01, 0xC1, 0x48, 0x01, 0xCA, 0x48, 0x01, 0xD3,
 ];
 /// ```assembly

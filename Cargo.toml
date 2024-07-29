@@ -1,6 +1,6 @@
 [package]
-name = "zydis2llvmir"
-version = "0.0.1-dev-1"
+name = "bin_lift"
+version = "0.0.1-dev-2"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,4 +11,4 @@ path = "src/lib.rs"
 
 [dependencies]
 inkwell = { version = "0.4.0", features = ["llvm17-0", "llvm17-0-prefer-static"]}
-zydis = { version = "4.1.0", features = ["encoder"] }
+zydis = { version = "4.1.1", features = ["encoder"] }

@@ -1,6 +1,7 @@
 mod getters;
 mod setters;
 
+use crate::miscellaneous::ExtendedRegister;
 use crate::util::get_int_type;
 use inkwell::builder::{Builder, BuilderError};
 use inkwell::context::Context;
@@ -42,12 +43,12 @@ pub enum eOpConv {
     UITOFP_OR_FPCAST,
 }
 
-pub struct LifterX86<'a, 'b, 'ctx> {
+pub(crate) struct LifterX86<'a, 'b, 'ctx> {
     pub context: &'ctx Context,
     pub builder: &'a Builder<'ctx>,
     pub module: &'a Module<'ctx>,
     pub mode: &'a MachineMode,
-    pub regs_hashmap: RefCell<HashMap<Register, BasicValueEnum<'b>>>,
+    pub regs_hashmap: RefCell<HashMap<ExtendedRegister, BasicValueEnum<'b>>>,
 }
 
 impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
@@ -67,7 +68,10 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
 
         let builder = self.builder;
         // Or do we need sign extend?
-        let mut addr = self.context.i64_type().const_int(0, false);
+        // Register AX used just as an example. We only chose it because of it's size
+        let mut addr = self
+            .get_int_type(&Register::AX.largest_enclosing(*self.mode))
+            .const_int(0, false);
 
         // If we have base, then add it to result
         if mem_info.base != Register::NONE {
@@ -120,7 +124,21 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
     }
 
     //  region:     -- Helpers
-    pub(in crate::lifter) fn create_s_ext_or_trunc(
+    pub(crate) fn create_z_ext_or_trunc(
+        &self,
+        value: IntValue<'a>,
+        dest: IntType<'a>,
+    ) -> Result<IntValue<'a>, BuilderError> {
+        let vty = value.get_type();
+        let builder = self.builder;
+
+        if vty.get_bit_width() < dest.get_bit_width() {
+            Ok(builder.build_int_z_extend(value, dest, "")?)
+        } else {
+            Ok(builder.build_int_truncate(value, dest, "")?)
+        }
+    }
+    pub(crate) fn create_s_ext_or_trunc(
         &self,
         value: IntValue<'a>,
         dest: IntType<'a>,
@@ -134,8 +152,9 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
             Ok(builder.build_int_truncate(value, dest, "")?)
         }
     }
+    // TODO: Think if we really need register as argument
     pub fn get_int_type(&self, register: &Register) -> IntType<'ctx> {
-        get_int_type(self.context, &register, self.mode)
+        get_int_type(self.context, register, self.mode)
     }
     //  endregion:     -- Helpers
 }

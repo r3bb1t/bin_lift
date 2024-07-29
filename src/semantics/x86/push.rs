@@ -2,8 +2,9 @@
 
 use crate::lifter::LifterX86;
 use inkwell::builder::BuilderError;
-use zydis::ffi::{DecodedOperandKind, DisplacementInfo, MemoryInfo};
-use zydis::{Instruction, MemoryOperandType, Operands, Register};
+use inkwell::types::BasicType;
+use inkwell::AddressSpace;
+use zydis::{Instruction, Operands};
 
 impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
     /// Push essentially translates to:
@@ -15,35 +16,20 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
         &'b self,
         instr: Instruction<O>,
     ) -> Result<(), BuilderError> {
+        let builder = self.builder;
         let operands = instr.operands();
+        let op0 = self.load_operand(&operands[0])?;
+        let sp = self.load_stack_pointer_value();
 
-        let rhs = self.load_operand(&operands[0])?;
+        let ci = sp
+            .get_type()
+            .const_int((operands[0].size / 8) as u64, false);
+        let sub = builder.build_int_sub(sp, ci, "")?;
+        let pt = op0.get_type().ptr_type(AddressSpace::default());
+        let addr = builder.build_int_to_ptr(sub, pt, "")?;
 
-        let sp_reg = Register::SP.largest_enclosing(*self.mode);
-
-        let int_type = self.get_int_type(&sp_reg);
-        let updated_sp = self.builder.build_int_sub(
-            self.load_stack_pointer().into_int_value(),
-            int_type.const_int((operands[0].size / 8) as u64, true),
-            "",
-        )?;
-
-        let to_store = MemoryInfo {
-            ty: MemoryOperandType::MEM,
-            segment: Register::SS,
-            base: sp_reg,
-            index: Register::NONE,
-            scale: 0,
-            disp: DisplacementInfo {
-                has_displacement: false,
-                displacement: 0,
-            },
-        };
-
-        updated_sp.set_name("sp_");
-
-        self.store_op(DecodedOperandKind::Mem(to_store), rhs);
-        self.store_op(DecodedOperandKind::Reg(sp_reg), updated_sp);
+        builder.build_store(addr, op0)?;
+        self.store_op(&operands[1].kind, sub)?;
 
         Ok(())
     }
