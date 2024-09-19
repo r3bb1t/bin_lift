@@ -1,10 +1,10 @@
 use inkwell::context::Context;
 use std::error::Error;
-use zydis::{FullInstruction, Mnemonic};
-use zydis2llvmir::compiler::Compiler;
-use zydis2llvmir::test_sequences;
+use zydis::Decoder;
+use zydis2llvmir::lifter::LifterX86;
 
-/// THis is an example of lifting some simple function to LLVM IR
+
+/// This is an example of lifting some simple function to LLVM IR
 /// It simply lifts the following code
 /// ```cpp
 /// __int64 __fastcall add(int a, int b, int c)
@@ -21,23 +21,30 @@ use zydis2llvmir::test_sequences;
 /// Please, Use llvm 18
 fn main() -> Result<(), Box<dyn Error>> {
     let context = Context::create();
-    let builder = context.create_builder();
-    let module = context.create_module("new_protected");
+    //let builder = context.create_builder();
+    //let module = context.create_module("new_protected");
 
     let mode = zydis::MachineMode::LONG_64;
-    let instructions = test_sequences::decode_sample_bytes(&TEST_ADDITION_NOT_PATCHED_64, &mode)?;
+    let decoder = Decoder::new64();
 
-    let instructions: Vec<FullInstruction> = instructions
-        .into_iter()
-        .filter(|ins| ins.mnemonic != Mnemonic::CALL)
-        .collect();
+    let mut all_instructions: Vec<zydis::FullInstruction> = vec![];
+    for instruction_info in decoder.decode_all(&TEST_ADDITION_NOT_PATCHED_64, 0) {
+        let (_ip, _raw_bytes, instruction) = instruction_info?;
+        all_instructions.push(instruction);
+    }
 
-    let compiled = Compiler::compile(&context, &builder, &module, instructions, &mode)?;
+    let lifter = LifterX86::new(&context, mode);
+    lifter.lift_basic_block(&all_instructions)?;
 
     // Append ret void at the end of the basic block
-    builder.build_return(None)?;
+    lifter.builder.build_return(None)?;
 
-    compiled.print_to_stderr();
+    lifter.module.print_to_stderr();
+
+    lifter
+        .module
+        .print_to_file("a.ll")
+        .expect("unable to print to file");
 
     Ok(())
 }

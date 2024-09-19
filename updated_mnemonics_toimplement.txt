@@ -8,6 +8,10 @@
         UNCOND_BR,
     ),
     (
+        POP,
+        POP,
+    ),
+    (
         RCL,
         ROTATE,
     ),
@@ -26,6 +30,10 @@
     (
         MOVSX,
         DATAXFER,
+    ),
+    (
+        LEA,
+        MISC,
     ),
     (
         CMOVLE,
@@ -242,6 +250,14 @@
     (
         CMOVZ,
         CMOV,
+    ),
+    (
+        PUSH,
+        PUSH,
+    ),
+    (
+        XCHG,
+        DATAXFER,
     ),
     (
         JNBE,

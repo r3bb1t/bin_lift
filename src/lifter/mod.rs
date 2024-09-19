@@ -1,17 +1,24 @@
 mod getters;
+mod retdec_common;
+mod retdec_getters;
+mod retdec_setters;
 mod setters;
 
+pub mod semantics;
+
+use crate::compiler::{ALL_REGS_IN_MIN_SIZE, CPU_FLAGS};
 use crate::miscellaneous::ExtendedRegister;
 use crate::util::get_int_type;
 use inkwell::builder::{Builder, BuilderError};
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::IntType;
-use inkwell::values::{BasicValueEnum, IntValue};
+use inkwell::types::{BasicMetadataTypeEnum, IntType};
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue};
+use semantics::Lifter;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use zydis::ffi::MemoryInfo;
-use zydis::{MachineMode, Register};
+use zydis::ffi::DecodedOperandKind;
+use zydis::{FullInstruction, MachineMode, Register};
 
 // Stolen from retdec code
 /**
@@ -20,6 +27,7 @@ use zydis::{MachineMode, Register};
  *
 */
 #[allow(non_camel_case_types, unused)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum eOpConv {
     /// Throw exception.
     Throw,
@@ -43,94 +51,112 @@ pub enum eOpConv {
     UITOFP_OR_FPCAST,
 }
 
-pub(crate) struct LifterX86<'a, 'b, 'ctx> {
+// TODO: Consider moving it to x86 folder and extracting important methods
+// into trait
+pub struct LifterX86<'ctx> {
     pub context: &'ctx Context,
-    pub builder: &'a Builder<'ctx>,
-    pub module: &'a Module<'ctx>,
-    pub mode: &'a MachineMode,
-    pub regs_hashmap: RefCell<HashMap<ExtendedRegister, BasicValueEnum<'b>>>,
+    pub builder: Builder<'ctx>,
+    pub module: Module<'ctx>,
+    pub mode: MachineMode,
+    pub regs_hashmap: RefCell<HashMap<ExtendedRegister, BasicValueEnum<'ctx>>>,
+    pub func_value: FunctionValue<'ctx>,
 }
 
-impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
-    /// Warning: Panics if got an invalid operand
-    /// Calculates address of memory about to be written/read
-    pub fn calc_mem_operand(
-        &'a self,
-        mem_info: &MemoryInfo,
-    ) -> Result<BasicValueEnum, BuilderError> {
-        // panic if got an invalid input. TODO: replace panicking with custom error
-        assert!(
-            !(mem_info.index == Register::NONE
-                && mem_info.base == Register::NONE
-                && mem_info.disp.displacement == 0),
-            "Received an invalid memory operand {mem_info:?}"
-        );
+impl<'ctx> LifterX86<'ctx> {
+    pub fn new(context: &'ctx Context, mode: MachineMode) -> Self {
+        let builder = context.create_builder();
+        let module = create_module(context, &mode);
+        let func_value = create_func(&mode, context, &module);
 
-        let builder = self.builder;
-        // Or do we need sign extend?
-        // Register AX used just as an example. We only chose it because of it's size
-        let mut addr = self
-            .get_int_type(&Register::AX.largest_enclosing(*self.mode))
-            .const_int(0, false);
+        let regs_hashmap = prep_regs_hashmap(&func_value, &mode);
+        Self {
+            context,
+            builder,
+            module,
+            mode,
+            regs_hashmap: RefCell::new(regs_hashmap),
+            func_value,
+        }
+    }
 
-        // If we have base, then add it to result
-        if mem_info.base != Register::NONE {
-            let base = self
-                .load_reg(&mem_info.base.largest_enclosing(*self.mode))?
-                .into_int_value();
-            // 0 + base
-            addr = builder.build_int_add(addr, base, "base_")?;
+    pub fn lift_basic_block(
+        &self,
+        instructions: &Vec<FullInstruction>,
+    ) -> Result<&FunctionValue, BuilderError> {
+        let entry_basic_block = self.context.append_basic_block(self.func_value, "entry");
+        self.builder.position_at_end(entry_basic_block);
+        for ins in instructions {
+            self.lift_instr(ins.clone())?;
+            if ins.mnemonic == zydis::Mnemonic::ADD {
+                let ops = ins.operands();
 
-            if mem_info.disp.has_displacement {
-                let displacement = self
-                    .context
-                    .i64_type()
-                    .const_int(mem_info.disp.displacement as u64, true);
+                let first_op_matched = if let DecodedOperandKind::Mem(mem) = &ops[0].kind {
+                    mem.base == zydis::Register::RAX || mem.index == zydis::Register::RAX
+                } else {
+                    false
+                };
 
-                let displacement_ext_or_trunc =
-                    self.create_s_ext_or_trunc(displacement, base.get_type())?;
-                addr = builder.build_int_add(displacement_ext_or_trunc, addr, "")?;
+                let second_matched =
+                    matches!(ops[1].kind, DecodedOperandKind::Reg(zydis::Register::AL));
+                if second_matched && first_op_matched {
+                    break;
+                }
             }
         }
 
-        // If we have index, then add it
-        if mem_info.index != Register::NONE {
-            let index = self.load_reg(&mem_info.index)?.into_int_value();
-            // If we have scale, then multiply and add index * scale
-            if mem_info.scale != 0 {
-                let scale = self
-                    .context
-                    .i8_type()
-                    .const_int(mem_info.scale as u64, false);
-                let multiplied = builder.build_int_mul(index, scale, "scale_multiplied")?;
-                addr = builder.build_int_add(addr, multiplied, "")?;
-            }
-            // Otherwise add just index
-            addr = builder.build_int_add(addr, index, "")?;
-        }
+        Ok(&self.func_value)
+    }
 
-        // Not expecting this to be possible tbh
-        if mem_info.index == Register::NONE
-            && mem_info.base == Register::NONE
-            && mem_info.disp.has_displacement
-        {
-            addr = self
-                .context
-                .i64_type()
-                .const_int(mem_info.disp.displacement as u64, true);
-        }
+    fn get_max_int_size(&self) -> IntType {
+        let example_reg = Register::AX.largest_enclosing(self.mode); // random rax for convenience
+        let int_type = get_int_type(self.context, &example_reg, &self.mode);
+        int_type
+    }
 
-        Ok(BasicValueEnum::from(addr))
+    fn prep_main_func(&self) {
+        let fn_type = self.context.i32_type().fn_type(&[], false);
+        let main_fn = self.module.add_function("main", fn_type, None);
+
+        let entry_bb = self.context.append_basic_block(main_fn, "entry");
+        self.builder.position_at_end(entry_bb);
+
+        let regs_hashmap = prep_regs_hashmap(&main_fn, &self.mode);
+    }
+    fn wrap_function_call(&self) -> Result<(), BuilderError> {
+        let example_reg = Register::AX.largest_enclosing(self.mode); // random rax for convenience
+        let int_type = get_int_type(self.context, &example_reg, &self.mode);
+
+        const ARGS_COUNT: usize = ALL_REGS_IN_MIN_SIZE.len() + CPU_FLAGS.len();
+        let regs_args: [_; ALL_REGS_IN_MIN_SIZE.len()] =
+            core::array::from_fn(|_| int_type.const_zero());
+
+        let flags_args: [_; CPU_FLAGS.len()] =
+            core::array::from_fn(|_| self.context.i8_type().const_zero());
+
+        let mut args = Vec::with_capacity(ARGS_COUNT);
+        args.extend_from_slice(&regs_args);
+        args.extend_from_slice(&flags_args);
+
+        let fn_params: Vec<BasicMetadataValueEnum<'ctx>> = self
+            .func_value
+            .get_params()
+            .iter()
+            .map(|val| BasicMetadataValueEnum::IntValue(val.into_int_value()))
+            .collect();
+
+        self.builder.build_call(self.func_value, &fn_params, "")?;
+
+        Ok(())
     }
 
     //  region:     -- Helpers
     pub(crate) fn create_z_ext_or_trunc(
         &self,
-        value: IntValue<'a>,
-        dest: IntType<'a>,
-    ) -> Result<IntValue<'a>, BuilderError> {
+        value: IntValue<'ctx>,
+        dest: IntType<'ctx>,
+    ) -> Result<IntValue<'ctx>, BuilderError> {
         let vty = value.get_type();
-        let builder = self.builder;
+        let builder = &self.builder;
 
         if vty.get_bit_width() < dest.get_bit_width() {
             Ok(builder.build_int_z_extend(value, dest, "")?)
@@ -140,11 +166,11 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
     }
     pub(crate) fn create_s_ext_or_trunc(
         &self,
-        value: IntValue<'a>,
-        dest: IntType<'a>,
-    ) -> Result<IntValue<'a>, BuilderError> {
+        value: IntValue<'ctx>,
+        dest: IntType<'ctx>,
+    ) -> Result<IntValue<'ctx>, BuilderError> {
         let vty = value.get_type();
-        let builder = self.builder;
+        let builder = &self.builder;
 
         if vty.get_bit_width() < dest.get_bit_width() {
             Ok(builder.build_int_s_extend(value, dest, "")?)
@@ -153,8 +179,89 @@ impl<'a, 'b, 'ctx> LifterX86<'a, 'b, 'ctx> {
         }
     }
     // TODO: Think if we really need register as argument
-    pub fn get_int_type(&self, register: &Register) -> IntType<'ctx> {
-        get_int_type(self.context, register, self.mode)
+    pub(crate) fn get_int_type(&self, register: &Register) -> IntType<'ctx> {
+        get_int_type(self.context, register, &self.mode)
+    }
+
+    /// Sets some debug value for easier understanding of what's going on
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_nop(&self, mnemonic: &zydis::Mnemonic) -> Result<(), BuilderError> {
+        let i128_ty = self.context.i128_type();
+        self.builder
+            .build_alloca(i128_ty, &format!("debug_{}_", mnemonic))?;
+        Ok(())
     }
     //  endregion:     -- Helpers
+}
+
+fn create_func<'ctx>(
+    mode: &MachineMode,
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+) -> FunctionValue<'ctx> {
+    let example_reg = Register::AX.largest_enclosing(*mode); // random rax for convenience
+    let int_type = get_int_type(context, &example_reg, mode);
+
+    const ARGS_COUNT: usize = ALL_REGS_IN_MIN_SIZE.len() + CPU_FLAGS.len();
+    let regs_args: [BasicMetadataTypeEnum; ALL_REGS_IN_MIN_SIZE.len()] =
+        core::array::from_fn(|_| int_type.into());
+
+    let flags_args: [BasicMetadataTypeEnum; CPU_FLAGS.len()] =
+        core::array::from_fn(|_| context.i8_type().into());
+
+    let mut args = Vec::with_capacity(ARGS_COUNT);
+    args.extend_from_slice(&regs_args);
+    args.extend_from_slice(&flags_args);
+
+    let fn_type = int_type.fn_type(&args, false);
+    let fn_val = module.add_function("protected", fn_type, None);
+
+    /// Inner function for converting register names
+    fn get_reg_name_for_mode(reg: Register, mode: MachineMode) -> &'static str {
+        reg.largest_enclosing(mode).static_string().unwrap()
+    }
+
+    // Set names for regular regs
+    for (id, reg) in ALL_REGS_IN_MIN_SIZE.into_iter().enumerate() {
+        fn_val
+            .get_nth_param(id as u32)
+            .unwrap()
+            .set_name(get_reg_name_for_mode(reg, *mode));
+    }
+
+    // Set names for CPU flags
+    for (id, cpu_flag) in CPU_FLAGS.into_iter().enumerate() {
+        fn_val
+            .get_nth_param((ALL_REGS_IN_MIN_SIZE.len() + id) as u32)
+            .unwrap()
+            .set_name(&format!("{cpu_flag:?}"));
+    }
+
+    fn_val
+}
+/// After the function was created, use this one to store everything in a hashmap
+fn prep_regs_hashmap<'ctx>(
+    fn_val: &FunctionValue<'ctx>,
+    mode: &MachineMode,
+) -> HashMap<ExtendedRegister, BasicValueEnum<'ctx>> {
+    let mut registers_hashmap = HashMap::new();
+    let regs: [Register; 17] = ALL_REGS_IN_MIN_SIZE.map(|reg| reg.largest_enclosing(*mode));
+
+    for (id, reg) in regs.into_iter().enumerate() {
+        registers_hashmap.insert(reg.into(), fn_val.get_nth_param(id as u32).unwrap());
+    }
+    // Also insert flags separately
+    let mut last_index = regs.len() - 1;
+    for cpu_flag in CPU_FLAGS {
+        last_index += 1;
+        registers_hashmap.insert(cpu_flag, fn_val.get_nth_param(last_index as u32).unwrap());
+    }
+
+    registers_hashmap
+}
+
+fn create_module<'ctx>(cx: &'ctx Context, mode: &MachineMode) -> Module<'ctx> {
+    let module_name = "protected";
+    let module = cx.create_module(module_name);
+    module
 }
