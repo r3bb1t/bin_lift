@@ -1,17 +1,16 @@
-// TODO: Test all this
+use super::{LifterX86, Result};
+use crate::miscellaneous::ExtendedRegister;
 
-use crate::{lifter::LifterX86, miscellaneous::ExtendedRegister};
-use inkwell::{builder::BuilderError, IntPredicate};
-use zydis::{Instruction, Operands};
+use inkwell::IntPredicate;
 
-impl<'ctx> LifterX86<'ctx> {
-    pub(super) fn lift_stc<O: Operands>(&self, _instr: Instruction<O>) -> Result<(), BuilderError> {
+impl LifterX86<'_> {
+    pub(super) fn lift_stc(&self) -> Result<()> {
         self.store_cpu_flag_bool(ExtendedRegister::CF, true);
         Ok(())
     }
 
-    pub(super) fn lift_cmc<O: Operands>(&self, _instr: Instruction<O>) -> Result<(), BuilderError> {
-        let cf = self.load_flag(&ExtendedRegister::CF);
+    pub(super) fn lift_cmc(&self) -> Result<()> {
+        let cf = self.load_flag(ExtendedRegister::CF)?;
         let xor_op = self
             .builder
             .build_xor(cf, cf.get_type().const_int(1, false), "cmc_")?;
@@ -19,27 +18,24 @@ impl<'ctx> LifterX86<'ctx> {
         Ok(())
     }
 
-    pub(super) fn lift_clc<O: Operands>(&self, _instr: Instruction<O>) -> Result<(), BuilderError> {
+    pub(super) fn lift_clc(&self) -> Result<()> {
         self.store_cpu_flag_bool(ExtendedRegister::CF, false);
         Ok(())
     }
 
-    pub(super) fn lift_cld<O: Operands>(&self, _instr: Instruction<O>) -> Result<(), BuilderError> {
+    pub(super) fn lift_cld(&self) -> Result<()> {
         self.store_cpu_flag_bool(ExtendedRegister::DF, false);
         Ok(())
     }
 
-    pub(super) fn lift_std<O: Operands>(&self, _instr: Instruction<O>) -> Result<(), BuilderError> {
+    pub(super) fn lift_std(&self) -> Result<()> {
         self.store_cpu_flag_bool(ExtendedRegister::DF, true);
         Ok(())
     }
 
-    pub(super) fn lift_salc<O: Operands>(
-        &self,
-        _instr: Instruction<O>,
-    ) -> Result<(), BuilderError> {
+    pub(super) fn lift_salc(&self) -> Result<()> {
         let builder = &self.builder;
-        let cf = self.load_flag(&ExtendedRegister::CF);
+        let cf = self.load_flag(ExtendedRegister::CF)?;
         let icmp = builder.build_int_compare(
             inkwell::IntPredicate::EQ,
             cf,
@@ -53,27 +49,24 @@ impl<'ctx> LifterX86<'ctx> {
             i8_ty.const_int(0xff, false),
             "salc_",
         )?;
-        self.store_cpu_flag(ExtendedRegister::AL, v);
+        self.store_cpu_flag(ExtendedRegister::AL, v.into_int_value());
         Ok(())
     }
 
-    pub(super) fn lift_lahf<O: Operands>(
-        &self,
-        _instr: Instruction<O>,
-    ) -> Result<(), BuilderError> {
+    pub(super) fn lift_lahf(&self) -> Result<()> {
         let builder = &self.builder;
         let i8_ty = self.context.i8_type();
 
         let cf =
-            builder.build_int_z_extend(self.load_flag(&ExtendedRegister::CF), i8_ty, "lahf_")?;
+            builder.build_int_z_extend(self.load_flag(ExtendedRegister::CF)?, i8_ty, "lahf_")?;
         let pf =
-            builder.build_int_z_extend(self.load_flag(&ExtendedRegister::PF), i8_ty, "lahf_")?;
+            builder.build_int_z_extend(self.load_flag(ExtendedRegister::PF)?, i8_ty, "lahf_")?;
         let af =
-            builder.build_int_z_extend(self.load_flag(&ExtendedRegister::AF), i8_ty, "lahf_")?;
+            builder.build_int_z_extend(self.load_flag(ExtendedRegister::AF)?, i8_ty, "lahf_")?;
         let zf =
-            builder.build_int_z_extend(self.load_flag(&ExtendedRegister::ZF), i8_ty, "lahf_")?;
+            builder.build_int_z_extend(self.load_flag(ExtendedRegister::ZF)?, i8_ty, "lahf_")?;
         let sf =
-            builder.build_int_z_extend(self.load_flag(&ExtendedRegister::SF), i8_ty, "lahf_")?;
+            builder.build_int_z_extend(self.load_flag(ExtendedRegister::SF)?, i8_ty, "lahf_")?;
 
         let zero = i8_ty.const_zero();
         let one = i8_ty.const_int(1, false);
@@ -110,13 +103,10 @@ impl<'ctx> LifterX86<'ctx> {
         Ok(())
     }
 
-    pub(super) fn lift_sahf<O: Operands>(
-        &self,
-        _instr: Instruction<O>,
-    ) -> Result<(), BuilderError> {
+    pub(super) fn lift_sahf(&self) -> Result<()> {
         let builder = &self.builder;
 
-        let ah = self.load_flag(&ExtendedRegister::AH);
+        let ah = self.load_flag(ExtendedRegister::AH)?;
         let ty = ah.get_type();
 
         let zero = ty.const_zero();

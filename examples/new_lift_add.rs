@@ -1,7 +1,7 @@
 use inkwell::context::Context;
 use std::{error::Error, time::Instant};
 use zydis::Decoder;
-use zydis2llvmir::lifter::LifterX86;
+use zydis2llvmir::compiler::Compiler;
 
 /// This is an example of lifting some simple function to LLVM IR
 /// It simply lifts the following code
@@ -23,31 +23,48 @@ fn main() -> Result<(), Box<dyn Error>> {
     //let builder = context.create_builder();
     //let module = context.create_module("new_protected");
 
-    let start_time = Instant::now();
-
     let mode = zydis::MachineMode::LONG_64;
+    //let mode = zydis::MachineMode::LEGACY_32;
     let decoder = Decoder::new64();
+
+    let start_time = Instant::now();
 
     let mut all_instructions: Vec<zydis::FullInstruction> = vec![];
     for instruction_info in decoder.decode_all(&TEST_ADDITION_NOT_PATCHED_64, 0) {
         let (_ip, _raw_bytes, instruction) = instruction_info?;
+        if instruction.mnemonic == zydis::Mnemonic::RET {
+            break;
+        }
         all_instructions.push(instruction);
     }
 
-    let lifter = LifterX86::new(&context, mode);
-    lifter.lift_basic_block(&all_instructions)?;
+    //let lifter = LifterX86::new(&context, mode);
+    let compiler = Compiler::new_with_x86_lifter(&context, mode)?;
+
+    //let lifter = LifterX86::new(&context, mode)?;
+    //lifter.lift_function(&all_instructions)?;
+    compiler.lift_function(&all_instructions)?;
 
     // // Append ret void at the end of the basic block
-    // lifter.builder.build_return(None)?;
+    //lifter.builder.build_return(None)?;
 
     println!("Elapsed: {:?}", start_time.elapsed());
 
-    lifter.module.print_to_stderr();
-
-    lifter
-        .module
-        .print_to_file("a.ll")
-        .expect("unable to print to file");
+    //lifter.module.print_to_stderr();
+    compiler.lifter.module.print_to_stderr();
+    //
+    println!(
+        "Elapsed after printing to stderr: {:?}",
+        start_time.elapsed()
+    );
+    //
+    //compiler
+    //    .lifter
+    //    .module
+    //    .print_to_file("experimental.ll")
+    //    .expect("unable to print to file");
+    //
+    //println!("Elapsed after printing to file: {:?}", start_time.elapsed());
 
     Ok(())
 }

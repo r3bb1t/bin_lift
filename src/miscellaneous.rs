@@ -1,3 +1,5 @@
+use zydis::RegisterClass;
+
 /// This file holds some stuff which i don't want to keep in other files. Like extension of
 /// zydis::Register enum
 
@@ -308,6 +310,11 @@ pub enum ExtendedRegister {
     VIP = 284,
     /// Able to use CPUID instruction
     ID = 285,
+
+    // Weird ones
+    Reserved1,
+    Reserved3,
+    Reserved5,
 }
 
 impl From<zydis::Register> for ExtendedRegister {
@@ -852,7 +859,31 @@ impl From<ExtendedRegister> for zydis::Register {
             ExtendedRegister::PKRU => Self::PKRU,
             ExtendedRegister::XCR0 => Self::XCR0,
             ExtendedRegister::UIF => Self::UIF,
-            _ => unreachable!(),
+            _ => unreachable!("Tried to convert {value:?} to zydis reg"),
         }
+    }
+}
+
+pub(crate) fn is_reg_floating_point(reg: zydis::Register) -> bool {
+    match reg.class() {
+        RegisterClass::X87 | zydis::RegisterClass::MMX => true,
+        RegisterClass::INVALID
+        | RegisterClass::GPR8
+        | RegisterClass::GPR16
+        | RegisterClass::GPR32
+        | RegisterClass::GPR64
+        | RegisterClass::XMM
+        | RegisterClass::YMM
+        | RegisterClass::ZMM
+        | RegisterClass::TMM
+        | RegisterClass::FLAGS
+        | RegisterClass::IP
+        | RegisterClass::SEGMENT
+        | RegisterClass::TABLE
+        | RegisterClass::TEST
+        | RegisterClass::CONTROL
+        | RegisterClass::DEBUG
+        | RegisterClass::MASK
+        | RegisterClass::BOUND => false,
     }
 }

@@ -8,10 +8,10 @@ use inkwell::{
 };
 use zydis::{MachineMode, Register};
 
-use crate::{miscellaneous::ExtendedRegister, util::get_int_type};
+use crate::miscellaneous::ExtendedRegister;
 
 /// Trait for defining your CPU context for simulation
-pub trait CpuContext {
+pub(super) trait CpuContext {
     fn create_variables(
         self,
         context: &Context,
@@ -20,14 +20,14 @@ pub trait CpuContext {
 }
 
 /// Marker trait for x86 cpu contexts
-pub trait SupportedIntTypesX86 {}
+pub(super) trait SupportedIntTypesX86 {}
 
 impl SupportedIntTypesX86 for u32 {}
 impl SupportedIntTypesX86 for u64 {}
 
 /// Context for x86 CPUs. Accepts both 64 and 32 bit variables
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct StartContextX86<I: SupportedIntTypesX86> {
+pub(super) struct StartContextX86<I: SupportedIntTypesX86> {
     // General purpose registers
     pub rax: I,
     pub rbx: I,
@@ -78,7 +78,9 @@ where
         context: &Context,
         mode: MachineMode,
     ) -> HashMap<ExtendedRegister, BasicValueEnum<'_>> {
-        let int_type = get_int_type(context, &Register::AX.largest_enclosing(mode), &mode);
+        //let int_type = get_int_type(context, &Register::AX.largest_enclosing(mode), &mode);
+        let int_type =
+            context.custom_width_int_type(Register::AX.largest_enclosing(mode).width(mode).into());
         let mut regs_hashmap: HashMap<ExtendedRegister, IntValue> = HashMap::new();
 
         let rax = int_type.const_int(self.rax.into(), false);
@@ -180,7 +182,10 @@ mod tests {
             ..Default::default()
         };
 
+        assert_eq!(1110, x86_ctx.rbx + x86_ctx.rcx);
+
         let vars = x86_ctx.create_variables(&context, MachineMode::LONG_64);
+
         dbg!(vars);
     }
 }

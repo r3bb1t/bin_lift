@@ -1,6 +1,8 @@
-#![forbid(unsafe_code)]
+//#![forbid(unsafe_code)]
 
 pub mod compiler;
-pub mod lifter;
+//pub mod lifter;
 mod miscellaneous;
 mod util;
+
+pub mod lifter;
