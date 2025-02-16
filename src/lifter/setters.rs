@@ -1,142 +1,226 @@
-use crate::lifter::LifterX86;
+use inkwell::values::{BasicValueEnum, IntValue};
+use zydis::{
+    ffi::{DecodedOperand, DecodedOperandKind, MemoryInfo},
+    Register, RegisterClass,
+};
+
 use crate::miscellaneous::ExtendedRegister;
-use inkwell::builder::BuilderError;
-use inkwell::values::BasicValueEnum;
-use inkwell::AddressSpace;
-use zydis::ffi::{DecodedOperandKind, MemoryInfo};
-use zydis::Register;
+
+use super::{LifterX86, PossibleLLVMValueEnum, Result};
 
 impl<'ctx> LifterX86<'ctx> {
-    pub fn store_op<T>(&self, op_kind: &DecodedOperandKind, val: T) -> Result<(), BuilderError>
+    pub(super) fn store_op<T>(&self, op: &DecodedOperand, value: T) -> Result<()>
     where
-        BasicValueEnum<'ctx>: From<T>,
+        PossibleLLVMValueEnum<'ctx>: From<T>,
     {
-        match op_kind {
-            DecodedOperandKind::Reg(reg) => self.store_reg(*reg, val),
-            DecodedOperandKind::Mem(mem_info) => {
-                self.store_mem(mem_info.clone(), &BasicValueEnum::from(val))?
-            }
-            DecodedOperandKind::Imm(_) | DecodedOperandKind::Unused => unreachable!(),
-            _ => unimplemented!(),
+        let val = PossibleLLVMValueEnum::from(value);
+
+        match &op.kind {
+            DecodedOperandKind::Reg(reg) => self.store_reg(*reg, val)?,
+            DecodedOperandKind::Mem(memory_info) => self.store_mem(memory_info, val)?,
+            _ => unreachable!("Tried to set value to operand with kind {:?}", op.kind),
         };
-        Ok(())
-    }
-
-    fn store_mem(&self, mem_info: MemoryInfo, val: &BasicValueEnum) -> Result<(), BuilderError> {
-        //let addr = self.calc_mem_operand(&mem_info)?;
-        let addr = self.retdec_calc_mem_operand(&mem_info)?;
-
-        //let i64_type = self.context.i64_type();
-        let addr_to_ptr = self.builder.build_int_to_ptr(
-            //addr.into_int_value(),
-            addr,
-            self.context.ptr_type(AddressSpace::default()),
-            //i64_type.ptr_type(AddressSpace::default()),
-            "mem_ptr_for_store_",
-        )?;
-        self.builder.build_store(addr_to_ptr, *val)?;
 
         Ok(())
     }
 
-    pub(crate) fn store_reg<T>(&self, reg: Register, val: T)
-    where
-        BasicValueEnum<'ctx>: From<T>,
-    {
-        let val = BasicValueEnum::from(val);
+    pub(super) fn store_mem(
+        &self,
+        mem: &MemoryInfo,
+        val: PossibleLLVMValueEnum<'ctx>,
+    ) -> Result<()> {
+        let builder = &self.builder;
+        let mem_addr = self.calc_mem_operand(mem)?;
 
-        let largest_enclosing = reg.largest_enclosing(self.mode);
-        let mut regs_hashmap = self.regs_hashmap.borrow_mut();
+        //let mem_ptr = builder.build_int_to_ptr(
+        //    mem_addr,
+        //    self.context.ptr_type(AddressSpace::default()),
+        //    "",
+        //)?;
 
-        // let cached = regs_hashmap.get(&largest_enclosing).unwrap();
-        // let cached_size = cached.get_type();
-        // let new_value = self.builder.build_load(cached_size,cached.into_pointer_value(), "" ).unwrap();
+        //let value: BasicValueEnum = val.into();
+        ////builder.build_store(mem_ptr, value)?;
+        //builder.build_store(self.stackmemory, value)?;
 
-        regs_hashmap.insert(largest_enclosing.into(), val);
+        let i8_ty = self.context.i8_type();
+        let pointer =
+            unsafe { builder.build_gep(i8_ty, self.stackmemory, &[mem_addr], "GEPSTORE")? };
+
+        let val: BasicValueEnum = val.into();
+        builder.build_store(pointer, val)?;
+        Ok(())
     }
 
-    pub(crate) fn store_cpu_flag<T>(&self, cpu_flag: ExtendedRegister, val: T)
-    where
-        T: Into<BasicValueEnum<'ctx>>,
-    {
-        let mut regs_hashmap = self.regs_hashmap.borrow_mut();
-        regs_hashmap.insert(cpu_flag, val.into());
+    pub(super) fn store_reg(&self, reg: Register, val: PossibleLLVMValueEnum<'ctx>) -> Result<()> {
+        let mut val = val.try_into()?;
+
+        const GPR_8_BIT: [Register; 20] = [
+            Register::AL,
+            Register::CL,
+            Register::DL,
+            Register::BL,
+            Register::AH,
+            Register::CH,
+            Register::DH,
+            Register::BH,
+            Register::SPL,
+            Register::BPL,
+            Register::SIL,
+            Register::DIL,
+            Register::R8B,
+            Register::R9B,
+            Register::R10B,
+            Register::R11B,
+            Register::R12B,
+            Register::R13B,
+            Register::R14B,
+            Register::R15B,
+        ];
+
+        const GPR_16_BIT: [Register; 16] = [
+            Register::AX,
+            Register::CX,
+            Register::DX,
+            Register::BX,
+            Register::SP,
+            Register::BP,
+            Register::SI,
+            Register::DI,
+            Register::R8W,
+            Register::R9W,
+            Register::R10W,
+            Register::R11W,
+            Register::R12W,
+            Register::R13W,
+            Register::R14W,
+            Register::R15W,
+        ];
+
+        if GPR_8_BIT.contains(&reg) {
+            val = self.set_val_to_sub_reg_8b(reg, val)?;
+        }
+
+        if GPR_16_BIT.contains(&reg) {
+            val = self.set_val_to_sub_reg_16b(reg, val)?;
+        }
+
+        if reg.class() == RegisterClass::FLAGS {
+            self.set_rflags_value(val)?;
+            return Ok(());
+        }
+
+        let new_key = if [RegisterClass::FLAGS, RegisterClass::IP].contains(&reg.class()) {
+            reg
+        } else {
+            self.get_register_largest_enclosing(&reg).into()
+        };
+
+        self.store_register_internal(new_key, val);
+
+        Ok(())
     }
 
-    pub(crate) fn store_cpu_flag_bool(&self, cpu_flag: ExtendedRegister, val: bool) {
+    fn set_val_to_sub_reg_8b(
+        &self,
+        reg: Register,
+        value: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>> {
+        let builder = &self.builder;
+        let ctx = self.context;
+
+        let full_reg_key = reg.largest_enclosing(self.mode);
+        let mut full_reg_value = self.get_register(full_reg_key)?.try_into()?;
+        //full_reg_value = self.create_z_ext_or_trunc(full_reg_value, ctx.i64_type())?;
+        full_reg_value = self.create_z_ext_or_trunc(full_reg_value, self.get_max_int_type())?;
+
+        let mut extended_value = builder.build_int_z_extend(value, ctx.i64_type(), "")?;
+
+        let is_high_byte_reg =
+            [Register::AH, Register::CH, Register::DH, Register::BH].contains(&reg);
+
+        let mask: u64 = if is_high_byte_reg {
+            0xFFFFFFFFFFFF00FF
+        } else {
+            0xFFFFFFFFFFFFFF00
+        };
+
+        let mask_value = ctx.i64_type().const_int(mask, false);
+        let masked_full_reg = builder.build_and(full_reg_value, mask_value, "maskedreg_")?;
+
+        if is_high_byte_reg {
+            extended_value = builder.build_left_shift(
+                extended_value,
+                extended_value.get_type().const_int(8, false),
+                "shifted_value_",
+            )?;
+        }
+
+        let updated_reg = builder.build_or(masked_full_reg, extended_value, "newreg_")?;
+
+        self.store_register_internal(full_reg_key, updated_reg);
+
+        Ok(updated_reg)
+    }
+
+    fn set_val_to_sub_reg_16b(
+        &self,
+        reg: Register,
+        value: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>> {
+        let builder = &self.builder;
+
+        let full_reg_key = reg.largest_enclosing(self.mode);
+        let full_reg_value: IntValue<'_> = self.get_register(full_reg_key)?.try_into()?;
+        let last_4_cleared = full_reg_value
+            .get_type()
+            .const_int(0xFFFFFFFFFFFF0000, false);
+        let masked_full_reg = builder.build_and(full_reg_value, last_4_cleared, "maskedreg_")?;
+        let value = builder.build_int_z_extend(value, full_reg_value.get_type(), "")?;
+
+        let updated_reg = builder.build_or(masked_full_reg, value, "newreg_")?;
+        Ok(updated_reg)
+    }
+
+    //pub(super) fn experimental_store_register_internal<T>(&self, r: Register, val: T)
+    //where
+    //    PossibleLLVMValueEnum<'ctx>: From<T>,
+    //{
+    //    let value = PossibleLLVMValueEnum::from(val);
+    //    let pr = r.largest_enclosing(self.mode);
+    //    let mut regs_hashmap = self.regs_hashmap.borrow_mut();
+    //    regs_hashmap.insert(pr.into(), value);
+    //}
+
+    pub(super) fn store_register_internal<T>(&self, r: Register, val: T)
+    where
+        PossibleLLVMValueEnum<'ctx>: From<T>,
+    {
+        let value = PossibleLLVMValueEnum::from(val);
+        let pr = self.get_register_largest_enclosing(&r);
+        //let mut regs_hashmap = self.regs_hashmap.borrow_mut();
+        let regs_hashmap = self.regs_hashmap.get();
+        //regs_hashmap.insert(pr.into(), value);
+        unsafe { (*regs_hashmap).insert(pr, value) };
+    }
+
+    pub(super) fn store_cpu_flag(&self, flag: ExtendedRegister, val: IntValue<'ctx>) {
+        let reg_type = self.context.custom_width_int_type(1);
+        let val = self.create_z_ext_or_trunc(val, reg_type).unwrap();
+        //let mut regs = self.regs_hashmap.borrow_mut();
+        let regs = self.regs_hashmap.get();
+        //regs.insert(flag, val.into());
+        unsafe { (*regs).insert(flag, val.into()) };
+    }
+
+    pub(super) fn store_cpu_flag_bool(&self, cpu_flag: ExtendedRegister, val: bool) {
         let bool_ty = &self.context.bool_type();
         let value = match val {
             true => bool_ty.const_int(1, false),
             false => bool_ty.const_zero(),
         };
-        let mut regs_hashmap = self.regs_hashmap.borrow_mut();
-        regs_hashmap.insert(cpu_flag, value.into());
+        //let mut regs_hashmap = self.regs_hashmap.borrow_mut();
+        let regs_hashmap = self.regs_hashmap.get();
+        //regs_hashmap.insert(cpu_flag, value.into());
+        unsafe { (*regs_hashmap).insert(cpu_flag, value.into()) };
     }
-
-    // region:  flags related stuff stolen from retdec
-    // #[allow(non_snake_case)]
-    // pub(crate) fn storeRegistersPlusSflags(
-    //     &self,
-    //     sflagsVal: BasicValueEnum<'ctx>,
-    //     regs: &[(ExtendedRegister, IntValue<'ctx>)],
-    // ) -> Result<(), BuilderError> {
-    //     for (reg, val) in regs {
-    //         let val = val.as_basic_value_enum();
-    //         self.store_cpu_flag(*reg, val);
-    //     }
-
-    //     let sflagsVal_as_int = sflagsVal.into_int_value();
-    //     self.store_cpu_flag(
-    //         ExtendedRegister::ZF,
-    //         self.generateZeroFlag(sflagsVal_as_int)?
-    //             .as_basic_value_enum(),
-    //     );
-    //     self.store_cpu_flag(
-    //         ExtendedRegister::SF,
-    //         self.generateSignFlag(sflagsVal_as_int)?
-    //             .as_basic_value_enum(),
-    //     );
-    //     self.store_cpu_flag(
-    //         ExtendedRegister::PF,
-    //         self.generateParityFlag(sflagsVal_as_int)?
-    //             .as_basic_value_enum(),
-    //     );
-    //     Ok(())
-    // }
-
-    // #[allow(non_snake_case)]
-    // fn generateZeroFlag(&self, val: IntValue<'ctx>) -> Result<IntValue<'ctx>, BuilderError> {
-    //     let zero = val.get_type().const_int(0, false);
-    //     self.builder
-    //         .build_int_compare(IntPredicate::EQ, val, zero, "")
-    // }
-
-    // #[allow(non_snake_case)]
-    // fn generateSignFlag(&self, val: IntValue<'ctx>) -> Result<IntValue<'ctx>, BuilderError> {
-    //     let zero = val.get_type().const_int(0, false);
-    //     self.builder
-    //         .build_int_compare(IntPredicate::SLT, val, zero, "")
-    // }
-
-    // #[allow(non_snake_case)]
-    // fn generateParityFlag(&self, val: IntValue<'ctx>) -> Result<IntValue<'ctx>, BuilderError> {
-    //     let builder = &self.builder;
-    //     let i8t = self.context.i8_type();
-    //     let trunc = self.builder.build_int_truncate(val, i8t, "")?;
-    //     let f = inkwell::intrinsics::Intrinsic::find("llvm.ctpop")
-    //         .expect("Can't find 'llvm.ctpop' intrinsic while calculating Parity Flag (PF)");
-
-    //     let f_func = f.get_declaration(&self.module, &[i8t.into()]).unwrap();
-    //     let c = builder.build_call(f_func, &[trunc.into()], "")?;
-
-    //     let c_retval = c.try_as_basic_value().left().unwrap().into_int_value();
-
-    //     let a = builder
-    //         // TODO: Check if "false" really fits
-    //         .build_and(c_retval, c_retval.get_type().const_int(1, false), "")?;
-
-    //     // TODO: Check if false fits here as well
-    //     builder.build_int_compare(IntPredicate::EQ, a, a.get_type().const_int(0, false), "")
-    // }
-    // endregion:  flags related stuff stolen from retdec
 }

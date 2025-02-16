@@ -1,8 +1,8 @@
 use inkwell::context::Context;
 use std::error::Error;
 use std::time::Instant;
-use zydis::Decoder;
-use zydis2llvmir::lifter::LifterX86;
+use zydis::{AllOperands, Decoder};
+use zydis2llvmir::compiler::Compiler;
 
 /// THis is an example of lifting some simple function to LLVM IR
 /// It simply lifts the following code
@@ -25,26 +25,37 @@ fn main() -> Result<(), Box<dyn Error>> {
     let decoder = Decoder::new64();
     // 17 883 instructions
     let raw_bytes = std::include_bytes!("files/raw_instr_trace.bin");
+    //let raw_bytes = std::include_bytes!("another_trace_35.bin");
     // This one is the wrong trace, but
 
+    let now = Instant::now();
     let mut instructions = Vec::with_capacity(17_833);
-    for instruction_info in decoder.decode_all(raw_bytes, 0) {
+    let mut last_is_rep = false;
+    for instruction_info in decoder.decode_all::<AllOperands>(raw_bytes, 0) {
         let (_ip, _raw_bytes, instruction) = instruction_info?;
-        instructions.push(instruction);
+
+        let curr_ins_attributes = instruction
+            .attributes
+            .contains(zydis::InstructionAttributes::HAS_REP);
+        if !last_is_rep {
+            instructions.push(instruction);
+        }
+        last_is_rep = curr_ins_attributes;
     }
 
     let mode = zydis::MachineMode::LONG_64;
     let instrs_count = instructions.len();
 
-    let now = Instant::now();
-    let lifter = LifterX86::new(&context, mode);
-    lifter.lift_basic_block(&instructions)?;
+    //let lifter = LifterX86::new(&context, mode);
+    let compiler = Compiler::new_with_x86_lifter(&context, mode)?;
+    //let lifter = LifterX86::new(&context, mode)?;
+    compiler.lift_function(&instructions)?;
     let elapsed = now.elapsed();
 
-    println!("Lifted {instrs_count} instructions. Took {elapsed:?}");
+    println!("Lifted vec with {instrs_count} instructions. Took {elapsed:?}");
 
     let now = Instant::now();
-    lifter.module.print_to_file("lifted.ll")?;
+    compiler.lifter.module.print_to_file("lifted.ll")?;
     let elapsed = now.elapsed();
     println!("Took {elapsed:?} to dump output to file");
 
