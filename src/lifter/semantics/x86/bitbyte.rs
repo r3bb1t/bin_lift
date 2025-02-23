@@ -1,7 +1,7 @@
 use super::{LifterX86, Result};
 use crate::miscellaneous::ExtendedRegister;
 
-use inkwell::{values::IntValue, IntPredicate};
+use inkwell::{builder, values::IntValue, IntPredicate};
 use zydis::{Instruction, Operands};
 
 impl LifterX86<'_> {
@@ -52,7 +52,7 @@ impl LifterX86<'_> {
             index = builder.build_int_sub(index, one_val, "")?;
         }
 
-        self.store_op(dst, index)?;
+        self.store_op(dst, bit_position)?;
         Ok(())
     }
 
@@ -64,16 +64,13 @@ impl LifterX86<'_> {
         let src = &ops[1];
 
         let r_value: IntValue<'_> = self.load_single_op(src, src.size)?.try_into()?;
-        let is_zero = builder.build_int_compare(
-            IntPredicate::EQ,
-            r_value,
-            r_value.get_type().const_zero(),
-            "",
-        )?;
+        let int_type = r_value.get_type();
+
+        let is_zero =
+            builder.build_int_compare(IntPredicate::EQ, r_value, int_type.const_zero(), "")?;
 
         self.store_cpu_flag(ExtendedRegister::ZF, is_zero);
 
-        let int_type = r_value.get_type();
         let int_width = int_type.get_bit_width();
 
         let mut result = int_type.const_int(int_width.into(), false);
@@ -106,7 +103,11 @@ impl LifterX86<'_> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let [l_value, bit_index_value] = self.load_two_first_ints(ops)?;
+        let dst = &ops[0];
+        let bit_index = &ops[1];
+
+        let l_value: IntValue = self.load_single_op(dst, dst.size)?.try_into()?;
+        let bit_index_value: IntValue = self.load_single_op(bit_index, dst.size)?.try_into()?;
 
         let l_value_bit_w = l_value.get_type().get_bit_width();
 
@@ -133,48 +134,83 @@ impl LifterX86<'_> {
         Ok(())
     }
 
-    // TODO: Check
+    //pub(super) fn lift_btc<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
+    //    let bldr = &self.builder;
+    //    let ops = instr.operands();
+    //    let operands = instr.operands();
+    //
+    //    let loaded_operands = self.load_two_first_ops(operands)?;
+    //
+    //    //let operands = self.retdec_loadOpBinary(ops, eOpConv::SEXT_TRUNC_OR_BITCAST)?;
+    //    let op0: IntValue<'_> = loaded_operands[0].try_into()?;
+    //
+    //    let mut op1: IntValue<'_> = loaded_operands[1].try_into()?;
+    //    let op0_bit_w = bldr
+    //        .build_int_cast(op0, op0.get_type(), "")?
+    //        .get_type()
+    //        .get_bit_width();
+    //    op1 = bldr.build_and(
+    //        op1,
+    //        op1.get_type().const_int((op0_bit_w - 1).into(), false),
+    //        "",
+    //    )?;
+    //
+    //    let srl = bldr.build_right_shift(op0, op1, false, "")?;
+    //    let and1 = bldr.build_and(srl, srl.get_type().const_int(1, false), "")?;
+    //    let icmp = bldr.build_int_compare(
+    //        inkwell::IntPredicate::NE,
+    //        and1,
+    //        and1.get_type().const_zero(),
+    //        "",
+    //    )?;
+    //    self.store_cpu_flag(ExtendedRegister::CF, icmp);
+    //
+    //    let shl = bldr.build_left_shift(op1.get_type().const_int(1, false), op1, "")?;
+    //    // TODO: Check this. In original it has -1 and sign extend
+    //    let xor1 = bldr.build_xor(shl, shl.get_type().const_int(u64::MAX, true), "")?;
+    //    let and2 = bldr.build_int_add(op1, xor1, "")?;
+    //    let xor2 = bldr.build_xor(and1, and1.get_type().const_int(1, false), "")?;
+    //    let shl2 = bldr.build_left_shift(xor2, op1, "")?;
+    //    let or1 = bldr.build_or(shl2, and2, "")?;
+    //
+    //    //self.retdec_store_op(&ops[0], or1, None)?;
+    //    self.store_op(&ops[0], or1)?;
+    //
+    //    Ok(())
+    //}
     pub(super) fn lift_btc<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let bldr = &self.builder;
+        let builder = &self.builder;
         let ops = instr.operands();
-        let operands = instr.operands();
 
-        let loaded_operands = self.load_two_first_ops(operands)?;
+        let base = &ops[0];
+        let offset = &ops[1];
 
-        //let operands = self.retdec_loadOpBinary(ops, eOpConv::SEXT_TRUNC_OR_BITCAST)?;
-        let op0: IntValue<'_> = loaded_operands[0].try_into()?;
+        let base_bit_width: u64 = base.size.into();
 
-        let mut op1: IntValue<'_> = loaded_operands[1].try_into()?;
-        let op0_bit_w = bldr
-            .build_int_cast(op0, op0.get_type(), "")?
-            .get_type()
-            .get_bit_width();
-        op1 = bldr.build_and(
-            op1,
-            op1.get_type().const_int((op0_bit_w - 1).into(), false),
+        let bit_offset: IntValue = self.load_single_op(offset, base.size)?.try_into()?;
+
+        let bit_offset_masked = builder.build_and(
+            bit_offset,
+            bit_offset.get_type().const_int(base_bit_width - 1, false),
             "",
         )?;
 
-        let srl = bldr.build_right_shift(op0, op1, false, "")?;
-        let and1 = bldr.build_and(srl, srl.get_type().const_int(1, false), "")?;
-        let icmp = bldr.build_int_compare(
-            inkwell::IntPredicate::NE,
-            and1,
-            and1.get_type().const_zero(),
+        let base_val: IntValue = self.load_single_op(base, base.size)?.try_into()?;
+        let mut bit = builder.build_right_shift(base_val, bit_offset_masked, false, "")?;
+
+        let one = bit.get_type().const_int(1, false);
+
+        bit = builder.build_and(bit, one, "")?;
+        self.store_cpu_flag(ExtendedRegister::CF, bit);
+
+        let mask = builder.build_left_shift(
+            base_val.get_type().const_int(1, false),
+            bit_offset_masked,
             "",
         )?;
-        self.store_cpu_flag(ExtendedRegister::CF, icmp);
+        let base_val = builder.build_xor(base_val, mask, "")?;
 
-        let shl = bldr.build_left_shift(op1.get_type().const_int(1, false), op1, "")?;
-        // TODO: Check this. In original it has -1 and sign extend
-        let xor1 = bldr.build_xor(shl, shl.get_type().const_int(u64::MAX, true), "")?;
-        let and2 = bldr.build_int_add(op1, xor1, "")?;
-        let xor2 = bldr.build_xor(and1, and1.get_type().const_int(1, false), "")?;
-        let shl2 = bldr.build_left_shift(xor2, op1, "")?;
-        let or1 = bldr.build_or(shl2, and2, "")?;
-
-        //self.retdec_store_op(&ops[0], or1, None)?;
-        self.store_op(&ops[0], or1)?;
+        self.store_op(base, base_val)?;
 
         Ok(())
     }
@@ -182,13 +218,14 @@ impl LifterX86<'_> {
     pub(super) fn lift_btr<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let builder = &self.builder;
         let ops = instr.operands();
-        let base = &ops[0];
 
+        let base = &ops[0];
+        let offset = &ops[1];
         let base_bit_width: u64 = base.size.into();
 
-        let [mut base_val, bit_offset] = self.load_two_first_ints(ops)?;
-        //let base_val_ty = base_val.get_type();
+        let bit_offset: IntValue = self.load_single_op(offset, base.size)?.try_into()?;
         let bit_offset_ty = bit_offset.get_type();
+        let mut base_val = self.load_single_op(base, base.size)?.try_into()?;
 
         let bit_offset_masked = builder.build_and(
             bit_offset,
@@ -217,40 +254,76 @@ impl LifterX86<'_> {
         Ok(())
     }
 
-    // TODO: Check this too
+    //// TODO: Check this too
+    //pub(super) fn lift_bts<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
+    //    let bldr = &self.builder;
+    //    let ops = instr.operands();
+    //
+    //    let operands = instr.operands();
+    //
+    //    let [op0, mut op1] = self.load_two_first_ints(operands)?;
+    //
+    //    let op0_bit_w = bldr
+    //        .build_int_cast(op0, op0.get_type(), "")?
+    //        .get_type()
+    //        .get_bit_width();
+    //
+    //    op1 = bldr.build_and(
+    //        op1,
+    //        op1.get_type().const_int((op0_bit_w - 1) as u64, false),
+    //        "",
+    //    )?;
+    //
+    //    let shl = bldr.build_left_shift(op1.get_type().const_int(1, false), op1, "")?;
+    //    let and = bldr.build_int_add(shl, op0, "")?;
+    //    let icmp = bldr.build_int_compare(
+    //        inkwell::IntPredicate::NE,
+    //        and,
+    //        and.get_type().const_zero(),
+    //        "",
+    //    )?;
+    //    self.store_cpu_flag(ExtendedRegister::CF, icmp);
+    //
+    //    let or1 = bldr.build_or(shl, op0, "")?;
+    //    //self.store_op(&ops[0].kind, or1)?;
+    //    self.store_op(&ops[0], or1)?;
+    //
+    //    Ok(())
+    //}
     pub(super) fn lift_bts<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let bldr = &self.builder;
+        let builder = &self.builder;
         let ops = instr.operands();
 
-        let operands = instr.operands();
+        let base = &ops[0];
+        let offset = &ops[1];
+        let base_bit_width: u64 = base.size.into();
 
-        let [op0, mut op1] = self.load_two_first_ints(operands)?;
+        let bit_offset: IntValue = self.load_single_op(offset, base.size)?.try_into()?;
+        let bit_offset_ty = bit_offset.get_type();
+        let mut base_val = self.load_single_op(base, base.size)?.try_into()?;
 
-        let op0_bit_w = bldr
-            .build_int_cast(op0, op0.get_type(), "")?
-            .get_type()
-            .get_bit_width();
-
-        op1 = bldr.build_and(
-            op1,
-            op1.get_type().const_int((op0_bit_w - 1) as u64, false),
+        let bit_offset_masked = builder.build_and(
+            bit_offset,
+            bit_offset_ty.const_int(base_bit_width - 1, false),
             "",
         )?;
 
-        let shl = bldr.build_left_shift(op1.get_type().const_int(1, false), op1, "")?;
-        let and = bldr.build_int_add(shl, op0, "")?;
-        let icmp = bldr.build_int_compare(
-            inkwell::IntPredicate::NE,
-            and,
-            and.get_type().const_zero(),
+        let mut bit = builder.build_right_shift(base_val, bit_offset_masked, false, "")?;
+        let one = bit.get_type().const_int(1, false);
+
+        bit = builder.build_and(bit, one, "")?;
+
+        self.store_cpu_flag(ExtendedRegister::CF, bit);
+
+        let mask = builder.build_left_shift(
+            base_val.get_type().const_int(1, false),
+            bit_offset_masked,
             "",
         )?;
-        self.store_cpu_flag(ExtendedRegister::CF, icmp);
 
-        let or1 = bldr.build_or(shl, op0, "")?;
-        //self.store_op(&ops[0].kind, or1)?;
-        self.store_op(&ops[0], or1)?;
+        base_val = builder.build_or(base_val, mask, "")?;
 
+        self.store_op(base, base_val)?;
         Ok(())
     }
 }

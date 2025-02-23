@@ -10,7 +10,7 @@ checksum = "4c95c10ba0b00a02636238b814946408b1322d5ac4760326e6fb8ec956d85775"
 
 [[package]]
 name = "bin_lift"
-version = "0.0.1-dev-2"
+version = "0.0.1-dev-3"
 dependencies = [
  "inkwell",
  "thiserror 2.0.9",

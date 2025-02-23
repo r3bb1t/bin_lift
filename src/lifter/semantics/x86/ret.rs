@@ -52,30 +52,27 @@ impl LifterX86<'_> {
         //todo!()
         Ok(())
     }
-
-    //pub(super) fn lift_ret<O: Operands>(&self, instr: Instruction<O>) -> Result<()> {
-    //    let operands = instr.operands();
+    //pub(super) fn lift_ret<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
     //    let builder = &self.builder;
+    //    let context = &self.context;
+    //    let ops = instr.operands();
     //
-    //    let rsp_value = self.experimental_load_register_internal(&Register::RSP)?;
+    //    let rsp = Register::RSP.largest_enclosing(self.mode);
+    //    let rsp_value: IntValue = self.get_register(rsp)?.try_into()?;
     //
-    //    let rsp_addr = if matches!(operands[0].kind, DecodedOperandKind::Imm(_)) {
-    //        &operands[0]
+    //    let rsp_addr = if matches!(ops[0].kind, DecodedOperandKind::Imm(_)) {
+    //        &ops[3]
     //    } else {
-    //        &operands[2]
+    //        &ops[2]
     //    };
     //
-    //    let retval: BasicValueEnum<'ctx> = self
-    //        .experimental_load_single_op(rsp_addr, rsp_addr.size)?
-    //        .into();
+    //    let retval: IntValue = self.load_single_op(rsp_addr, rsp_addr.size)?.try_into()?;
     //
-    //    // TODO: Consider wrapping in a new error
-    //    let block = builder.get_insert_block().unwrap();
-    //    block.set_name("ret_check_");
-    //    let function = block.get_parent();
-    //    let last_inst = self.builder.build_return(Some(&retval));
+    //    let is_real_return;
+    //    if rsp_value.is_const() {
     //
-    //    //todo!()
-    //    Ok(())
+    //    }
+    //
+    //    todo!()
     //}
 }

@@ -8,7 +8,7 @@ impl LifterX86<'_> {
         let al: IntValue<'_> = self.load_reg_internal(&Register::AL)?.try_into()?;
         let ax = self
             .builder
-            .build_int_s_extend(al, self.context.i16_type(), "")?;
+            .build_int_s_extend(al, self.context.i16_type(), "ax_cbw")?;
 
         self.store_register_internal(Register::AX, ax);
 
@@ -34,7 +34,7 @@ impl LifterX86<'_> {
                 i32_ty.const_zero(),
                 // hopefully wont be a bug
                 i32_ty.const_all_ones(),
-                "",
+                "cdq_edx_",
             )?
             .into_int_value();
 
@@ -73,7 +73,7 @@ impl LifterX86<'_> {
                 i64_ty.const_zero(),
                 // hopefully wont be a bug
                 i64_ty.const_all_ones(),
-                "",
+                "cqo",
             )?
             .into_int_value();
 
@@ -96,7 +96,7 @@ impl LifterX86<'_> {
             op0.get_type()
                 .const_int((Register::RAX.width(self.mode) - 1).into(), false),
             false,
-            "",
+            "cwd",
         )?;
 
         //self.store_reg(Register::DX, e.as_basic_value_enum());

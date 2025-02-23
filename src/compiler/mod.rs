@@ -105,8 +105,8 @@ impl<'ctx> Compiler<'ctx> {
 
             if [
                 //InstructionCategory::CALL,
-                InstructionCategory::COND_BR,
-                InstructionCategory::UNCOND_BR,
+                //InstructionCategory::COND_BR,
+                //InstructionCategory::UNCOND_BR,
                 //InstructionCategory::RET,
             ]
             .contains(&instruction.meta.category)

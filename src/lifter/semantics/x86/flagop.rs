@@ -53,104 +53,195 @@ impl LifterX86<'_> {
         Ok(())
     }
 
+    //pub(super) fn lift_lahf(&self) -> Result<()> {
+    //    let builder = &self.builder;
+    //    let i8_ty = self.context.i8_type();
+    //
+    //    let cf =
+    //        builder.build_int_z_extend(self.load_flag(ExtendedRegister::CF)?, i8_ty, "lahf_")?;
+    //    let pf =
+    //        builder.build_int_z_extend(self.load_flag(ExtendedRegister::PF)?, i8_ty, "lahf_")?;
+    //    let af =
+    //        builder.build_int_z_extend(self.load_flag(ExtendedRegister::AF)?, i8_ty, "lahf_")?;
+    //    let zf =
+    //        builder.build_int_z_extend(self.load_flag(ExtendedRegister::ZF)?, i8_ty, "lahf_")?;
+    //    let sf =
+    //        builder.build_int_z_extend(self.load_flag(ExtendedRegister::SF)?, i8_ty, "lahf_")?;
+    //
+    //    let zero = i8_ty.const_zero();
+    //    let one = i8_ty.const_int(1, false);
+    //
+    //    let mut val = zero;
+    //    val = builder.build_or(val, cf, "")?;
+    //    val = builder.build_or(
+    //        val,
+    //        builder.build_left_shift(one, i8_ty.const_int(1, false), "lahf_")?,
+    //        "",
+    //    )?;
+    //    val = builder.build_or(
+    //        val,
+    //        builder.build_left_shift(pf, i8_ty.const_int(2, false), "lahf_")?,
+    //        "",
+    //    )?;
+    //    val = builder.build_or(
+    //        val,
+    //        builder.build_left_shift(af, i8_ty.const_int(4, false), "lahf_")?,
+    //        "",
+    //    )?;
+    //    val = builder.build_or(
+    //        val,
+    //        builder.build_left_shift(zf, i8_ty.const_int(6, false), "lahf_")?,
+    //        "",
+    //    )?;
+    //    val = builder.build_or(
+    //        val,
+    //        builder.build_left_shift(sf, i8_ty.const_int(7, false), "lahf_")?,
+    //        "",
+    //    )?;
+    //
+    //    self.store_cpu_flag(ExtendedRegister::AH, val);
+    //    Ok(())
+    //}
+
     pub(super) fn lift_lahf(&self) -> Result<()> {
         let builder = &self.builder;
         let i8_ty = self.context.i8_type();
 
-        let cf =
-            builder.build_int_z_extend(self.load_flag(ExtendedRegister::CF)?, i8_ty, "lahf_")?;
-        let pf =
-            builder.build_int_z_extend(self.load_flag(ExtendedRegister::PF)?, i8_ty, "lahf_")?;
-        let af =
-            builder.build_int_z_extend(self.load_flag(ExtendedRegister::AF)?, i8_ty, "lahf_")?;
-        let zf =
-            builder.build_int_z_extend(self.load_flag(ExtendedRegister::ZF)?, i8_ty, "lahf_")?;
-        let sf =
-            builder.build_int_z_extend(self.load_flag(ExtendedRegister::SF)?, i8_ty, "lahf_")?;
+        let mut sf = self.load_flag(ExtendedRegister::SF)?;
+        let mut zf = self.load_flag(ExtendedRegister::ZF)?;
+        let mut af = self.load_flag(ExtendedRegister::AF)?;
+        let mut pf = self.load_flag(ExtendedRegister::PF)?;
+        let mut cf = self.load_flag(ExtendedRegister::CF)?;
 
-        let zero = i8_ty.const_zero();
-        let one = i8_ty.const_int(1, false);
-
-        let mut val = zero;
-        val = builder.build_or(val, cf, "")?;
-        val = builder.build_or(
-            val,
-            builder.build_left_shift(one, i8_ty.const_int(1, false), "lahf_")?,
+        cf = builder.build_int_z_extend(cf, i8_ty, "")?;
+        pf = builder.build_left_shift(
+            builder.build_int_z_extend(pf, i8_ty, "")?,
+            i8_ty.const_int(2, false),
             "",
         )?;
-        val = builder.build_or(
-            val,
-            builder.build_left_shift(pf, i8_ty.const_int(2, false), "lahf_")?,
+        af = builder.build_left_shift(
+            builder.build_int_z_extend(af, i8_ty, "")?,
+            i8_ty.const_int(4, false),
             "",
         )?;
-        val = builder.build_or(
-            val,
-            builder.build_left_shift(af, i8_ty.const_int(4, false), "lahf_")?,
+        zf = builder.build_left_shift(
+            builder.build_int_z_extend(zf, i8_ty, "")?,
+            i8_ty.const_int(6, false),
             "",
         )?;
-        val = builder.build_or(
-            val,
-            builder.build_left_shift(zf, i8_ty.const_int(6, false), "lahf_")?,
-            "",
-        )?;
-        val = builder.build_or(
-            val,
-            builder.build_left_shift(sf, i8_ty.const_int(7, false), "lahf_")?,
+        sf = builder.build_left_shift(
+            builder.build_int_z_extend(sf, i8_ty, "")?,
+            i8_ty.const_int(7, false),
             "",
         )?;
 
-        self.store_cpu_flag(ExtendedRegister::AH, val);
+        let r_value = builder.build_int_add(
+            builder.build_or(
+                builder.build_or(
+                    builder.build_or(cf, pf, "")?,
+                    builder.build_or(af, sf, "")?,
+                    "",
+                )?,
+                zf,
+                "",
+            )?,
+            cf.get_type().const_int(2, false),
+            "",
+        )?;
+
+        self.store_cpu_flag(ExtendedRegister::AF, r_value);
         Ok(())
     }
 
+    //pub(super) fn lift_sahf(&self) -> Result<()> {
+    //    let builder = &self.builder;
+    //
+    //    let ah = self.load_flag(ExtendedRegister::AH)?;
+    //    let ah_ty = ah.get_type();
+    //
+    //    let zero = ah_ty.const_zero();
+    //
+    //    self.store_cpu_flag(
+    //        ExtendedRegister::CF,
+    //        builder.build_and(ah, ah_ty.const_int(1 << 0, false), "sahf_")?,
+    //    );
+    //    self.store_cpu_flag(
+    //        ExtendedRegister::PF,
+    //        builder.build_int_compare(
+    //            IntPredicate::NE,
+    //            builder.build_and(ah, ah_ty.const_int(1 << 2, false), "sahf_")?,
+    //            zero,
+    //            "",
+    //        )?,
+    //    );
+    //    self.store_cpu_flag(
+    //        ExtendedRegister::AF,
+    //        builder.build_int_compare(
+    //            IntPredicate::NE,
+    //            builder.build_and(ah, ah_ty.const_int(1 << 4, false), "sahf_")?,
+    //            zero,
+    //            "",
+    //        )?,
+    //    );
+    //    self.store_cpu_flag(
+    //        ExtendedRegister::ZF,
+    //        builder.build_int_compare(
+    //            IntPredicate::NE,
+    //            builder.build_and(ah, ah_ty.const_int(1 << 6, false), "sahf_")?,
+    //            zero,
+    //            "",
+    //        )?,
+    //    );
+    //    self.store_cpu_flag(
+    //        ExtendedRegister::SF,
+    //        builder.build_int_compare(
+    //            IntPredicate::NE,
+    //            builder.build_and(ah, ah_ty.const_int(1 << 7, false), "sahf_")?,
+    //            zero,
+    //            "",
+    //        )?,
+    //    );
+    //    Ok(())
+    //}
     pub(super) fn lift_sahf(&self) -> Result<()> {
         let builder = &self.builder;
 
         let ah = self.load_flag(ExtendedRegister::AH)?;
-        let ty = ah.get_type();
+        let ah_ty = ah.get_type();
 
-        let zero = ty.const_zero();
+        let one = ah_ty.const_int(1, false);
 
-        self.store_cpu_flag(
-            ExtendedRegister::CF,
-            builder.build_and(ah, ty.const_int(1 << 0, false), "sahf_")?,
-        );
-        self.store_cpu_flag(
-            ExtendedRegister::PF,
-            builder.build_int_compare(
-                IntPredicate::NE,
-                builder.build_and(ah, ty.const_int(1 << 2, false), "sahf_")?,
-                zero,
-                "",
-            )?,
-        );
-        self.store_cpu_flag(
-            ExtendedRegister::AF,
-            builder.build_int_compare(
-                IntPredicate::NE,
-                builder.build_and(ah, ty.const_int(1 << 4, false), "sahf_")?,
-                zero,
-                "",
-            )?,
-        );
-        self.store_cpu_flag(
-            ExtendedRegister::ZF,
-            builder.build_int_compare(
-                IntPredicate::NE,
-                builder.build_and(ah, ty.const_int(1 << 6, false), "sahf_")?,
-                zero,
-                "",
-            )?,
-        );
-        self.store_cpu_flag(
-            ExtendedRegister::SF,
-            builder.build_int_compare(
-                IntPredicate::NE,
-                builder.build_and(ah, ty.const_int(1 << 7, false), "sahf_")?,
-                zero,
-                "",
-            )?,
-        );
+        let cf = builder.build_and(
+            builder.build_right_shift(ah, ah_ty.const_int(0, false), false, "")?,
+            one,
+            "sahf_cf_",
+        )?;
+        let pf = builder.build_and(
+            builder.build_right_shift(ah, ah_ty.const_int(2, false), false, "")?,
+            one,
+            "sahf_pf_",
+        )?;
+        let af = builder.build_and(
+            builder.build_right_shift(ah, ah_ty.const_int(4, false), false, "")?,
+            one,
+            "sahf_af_",
+        )?;
+        let zf = builder.build_and(
+            builder.build_right_shift(ah, ah_ty.const_int(6, false), false, "")?,
+            one,
+            "sahf_zf_",
+        )?;
+        let sf = builder.build_and(
+            builder.build_right_shift(ah, ah_ty.const_int(7, false), false, "")?,
+            one,
+            "sahf_sf_",
+        )?;
+
+        self.store_cpu_flag(ExtendedRegister::CF, cf);
+        self.store_cpu_flag(ExtendedRegister::PF, pf);
+        self.store_cpu_flag(ExtendedRegister::AF, af);
+        self.store_cpu_flag(ExtendedRegister::ZF, zf);
+        self.store_cpu_flag(ExtendedRegister::SF, sf);
         Ok(())
     }
 }

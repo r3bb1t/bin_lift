@@ -167,7 +167,6 @@ impl LifterX86<'_> {
         let result = builder.build_int_compare(
             IntPredicate::EQ,
             sf,
-            // in mergen its i1 , its strange, so i use cf type (which is i8). Yes, here too
             sf.get_type().const_zero(),
             "setnb_result",
         )?;

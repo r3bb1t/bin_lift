@@ -54,6 +54,7 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::SUB => self.lift_sub(instr),
 
             // bitbyte
+            // NOTE: checked
             Mnemonic::BSR => self.lift_bsr(instr),
             Mnemonic::BSF => self.lift_bsf(instr),
             Mnemonic::BT => self.lift_bt(instr),
@@ -105,6 +106,7 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::XOR => self.lift_xor(instr),
 
             // flagop
+            // NOTE: checked
             Mnemonic::CMC => self.lift_cmc(),
             Mnemonic::CLC => self.lift_clc(),
             Mnemonic::CLD => self.lift_cld(),
@@ -138,6 +140,7 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::ROR => self.lift_ror(instr),
 
             // setcc
+            // NOTE: checked
             Mnemonic::SETB => self.lift_setb(instr),
             Mnemonic::SETBE => self.lift_setbe(instr),
             Mnemonic::SETL => self.lift_setl(instr),
