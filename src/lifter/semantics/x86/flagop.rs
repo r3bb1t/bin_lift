@@ -1,41 +1,39 @@
 use super::{LifterX86, Result};
-use crate::miscellaneous::ExtendedRegister;
-
-use inkwell::IntPredicate;
+use crate::miscellaneous::ExtendedRegisterEnum;
 
 impl LifterX86<'_> {
     pub(super) fn lift_stc(&self) -> Result<()> {
-        self.store_cpu_flag_bool(ExtendedRegister::CF, true);
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, true);
         Ok(())
     }
 
     pub(super) fn lift_cmc(&self) -> Result<()> {
-        let cf = self.load_flag(ExtendedRegister::CF)?;
+        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
         let xor_op = self
             .builder
             .build_xor(cf, cf.get_type().const_int(1, false), "cmc_")?;
-        self.store_cpu_flag(ExtendedRegister::CF, xor_op);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, xor_op);
         Ok(())
     }
 
     pub(super) fn lift_clc(&self) -> Result<()> {
-        self.store_cpu_flag_bool(ExtendedRegister::CF, false);
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false);
         Ok(())
     }
 
     pub(super) fn lift_cld(&self) -> Result<()> {
-        self.store_cpu_flag_bool(ExtendedRegister::DF, false);
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::DF, false);
         Ok(())
     }
 
     pub(super) fn lift_std(&self) -> Result<()> {
-        self.store_cpu_flag_bool(ExtendedRegister::DF, true);
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::DF, true);
         Ok(())
     }
 
     pub(super) fn lift_salc(&self) -> Result<()> {
         let builder = &self.builder;
-        let cf = self.load_flag(ExtendedRegister::CF)?;
+        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
         let icmp = builder.build_int_compare(
             inkwell::IntPredicate::EQ,
             cf,
@@ -49,7 +47,7 @@ impl LifterX86<'_> {
             i8_ty.const_int(0xff, false),
             "salc_",
         )?;
-        self.store_cpu_flag(ExtendedRegister::AL, v.into_int_value());
+        self.store_cpu_flag(ExtendedRegisterEnum::AL, v.into_int_value());
         Ok(())
     }
 
@@ -107,11 +105,11 @@ impl LifterX86<'_> {
         let builder = &self.builder;
         let i8_ty = self.context.i8_type();
 
-        let mut sf = self.load_flag(ExtendedRegister::SF)?;
-        let mut zf = self.load_flag(ExtendedRegister::ZF)?;
-        let mut af = self.load_flag(ExtendedRegister::AF)?;
-        let mut pf = self.load_flag(ExtendedRegister::PF)?;
-        let mut cf = self.load_flag(ExtendedRegister::CF)?;
+        let mut sf = self.load_flag(ExtendedRegisterEnum::SF)?;
+        let mut zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
+        let mut af = self.load_flag(ExtendedRegisterEnum::AF)?;
+        let mut pf = self.load_flag(ExtendedRegisterEnum::PF)?;
+        let mut cf = self.load_flag(ExtendedRegisterEnum::CF)?;
 
         cf = builder.build_int_z_extend(cf, i8_ty, "")?;
         pf = builder.build_left_shift(
@@ -149,7 +147,7 @@ impl LifterX86<'_> {
             "",
         )?;
 
-        self.store_cpu_flag(ExtendedRegister::AF, r_value);
+        self.store_cpu_flag(ExtendedRegisterEnum::AF, r_value);
         Ok(())
     }
 
@@ -206,7 +204,7 @@ impl LifterX86<'_> {
     pub(super) fn lift_sahf(&self) -> Result<()> {
         let builder = &self.builder;
 
-        let ah = self.load_flag(ExtendedRegister::AH)?;
+        let ah = self.load_flag(ExtendedRegisterEnum::AH)?;
         let ah_ty = ah.get_type();
 
         let one = ah_ty.const_int(1, false);
@@ -237,11 +235,11 @@ impl LifterX86<'_> {
             "sahf_sf_",
         )?;
 
-        self.store_cpu_flag(ExtendedRegister::CF, cf);
-        self.store_cpu_flag(ExtendedRegister::PF, pf);
-        self.store_cpu_flag(ExtendedRegister::AF, af);
-        self.store_cpu_flag(ExtendedRegister::ZF, zf);
-        self.store_cpu_flag(ExtendedRegister::SF, sf);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
+        self.store_cpu_flag(ExtendedRegisterEnum::AF, af);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
         Ok(())
     }
 }

@@ -1,4 +1,4 @@
-use super::{definintions::PossibleLLVMValueEnum, Error, ExtendedRegister, LifterX86, Result};
+use super::{definintions::PossibleLLVMValueEnum, Error, ExtendedRegisterEnum, LifterX86, Result};
 
 use inkwell::{intrinsics::Intrinsic, values::IntValue, IntPredicate};
 
@@ -66,7 +66,7 @@ impl<'ctx> LifterX86<'ctx> {
     pub(super) fn retdec_store_registers_plus_sflags<T>(
         &self,
         sflags_val: T,
-        regs: &[(ExtendedRegister, IntValue<'ctx>)],
+        regs: &[(ExtendedRegisterEnum, IntValue<'ctx>)],
     ) -> Result<()>
     where
         PossibleLLVMValueEnum<'ctx>: From<T>,
@@ -79,15 +79,15 @@ impl<'ctx> LifterX86<'ctx> {
 
         let sflags_val_as_int: IntValue<'_> = sflags_val.try_into()?;
         self.store_cpu_flag(
-            ExtendedRegister::ZF,
+            ExtendedRegisterEnum::ZF,
             self.generate_zero_flag(sflags_val_as_int)?,
         );
         self.store_cpu_flag(
-            ExtendedRegister::SF,
+            ExtendedRegisterEnum::SF,
             self.generate_sign_flag(sflags_val_as_int)?,
         );
         self.store_cpu_flag(
-            ExtendedRegister::PF,
+            ExtendedRegisterEnum::PF,
             self.generate_parity_flag(sflags_val_as_int)?,
         );
         Ok(())
@@ -165,21 +165,21 @@ impl<'ctx> LifterX86<'ctx> {
         Ok(rflags)
     }
 
-    fn resolve_flag_from_range(range_int: u64) -> Result<ExtendedRegister> {
+    fn resolve_flag_from_range(range_int: u64) -> Result<ExtendedRegisterEnum> {
         match range_int {
-            0 => Ok(ExtendedRegister::CF),
-            1 => Ok(ExtendedRegister::Reserved1),
-            2 => Ok(ExtendedRegister::PF),
-            3 => Ok(ExtendedRegister::Reserved3),
-            4 => Ok(ExtendedRegister::AF),
-            5 => Ok(ExtendedRegister::Reserved5),
-            6 => Ok(ExtendedRegister::ZF),
-            7 => Ok(ExtendedRegister::SF),
-            8 => Ok(ExtendedRegister::TF),
-            9 => Ok(ExtendedRegister::IF),
-            10 => Ok(ExtendedRegister::DF),
-            11 => Ok(ExtendedRegister::OF),
-            12 => Ok(ExtendedRegister::IOPL), // prob the unnecesarry one
+            0 => Ok(ExtendedRegisterEnum::CF),
+            1 => Ok(ExtendedRegisterEnum::Reserved1),
+            2 => Ok(ExtendedRegisterEnum::PF),
+            3 => Ok(ExtendedRegisterEnum::Reserved3),
+            4 => Ok(ExtendedRegisterEnum::AF),
+            5 => Ok(ExtendedRegisterEnum::Reserved5),
+            6 => Ok(ExtendedRegisterEnum::ZF),
+            7 => Ok(ExtendedRegisterEnum::SF),
+            8 => Ok(ExtendedRegisterEnum::TF),
+            9 => Ok(ExtendedRegisterEnum::IF),
+            10 => Ok(ExtendedRegisterEnum::DF),
+            11 => Ok(ExtendedRegisterEnum::OF),
+            12 => Ok(ExtendedRegisterEnum::IOPL), // prob the unnecesarry one
             _ => Err(Error::FlagResolveError(range_int)),
         }
     }

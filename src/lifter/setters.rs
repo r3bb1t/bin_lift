@@ -1,12 +1,11 @@
+use super::{LifterX86, PossibleLLVMValueEnum, Result};
+use crate::miscellaneous::ExtendedRegisterEnum;
+
 use inkwell::values::{BasicValueEnum, IntValue};
 use zydis::{
     ffi::{DecodedOperand, DecodedOperandKind, MemoryInfo},
     Register, RegisterClass,
 };
-
-use crate::miscellaneous::ExtendedRegister;
-
-use super::{LifterX86, PossibleLLVMValueEnum, Result};
 
 impl<'ctx> LifterX86<'ctx> {
     pub(super) fn store_op<T>(&self, op: &DecodedOperand, value: T) -> Result<()>
@@ -16,7 +15,8 @@ impl<'ctx> LifterX86<'ctx> {
         let val = PossibleLLVMValueEnum::from(value);
 
         match &op.kind {
-            DecodedOperandKind::Reg(reg) => self.store_reg(*reg, val)?,
+            // NOTE: When adding float support, must revisit this first
+            DecodedOperandKind::Reg(reg) => self.store_reg(*reg, val.try_into()?)?,
             DecodedOperandKind::Mem(memory_info) => self.store_mem(memory_info, val)?,
             _ => unreachable!("Tried to set value to operand with kind {:?}", op.kind),
         };
@@ -51,9 +51,7 @@ impl<'ctx> LifterX86<'ctx> {
         Ok(())
     }
 
-    pub(super) fn store_reg(&self, reg: Register, val: PossibleLLVMValueEnum<'ctx>) -> Result<()> {
-        let mut val = val.try_into()?;
-
+    pub(super) fn store_reg(&self, reg: Register, mut val: IntValue<'ctx>) -> Result<()> {
         const GPR_8_BIT: [Register; 20] = [
             Register::AL,
             Register::CL,
@@ -112,7 +110,7 @@ impl<'ctx> LifterX86<'ctx> {
         let new_key = if [RegisterClass::FLAGS, RegisterClass::IP].contains(&reg.class()) {
             reg
         } else {
-            self.get_register_largest_enclosing(&reg).into()
+            self.get_register_largest_enclosing(&reg)
         };
 
         self.store_register_internal(new_key, val);
@@ -129,7 +127,7 @@ impl<'ctx> LifterX86<'ctx> {
         let ctx = self.context;
 
         let full_reg_key = reg.largest_enclosing(self.mode);
-        let mut full_reg_value = self.get_register(full_reg_key)?.try_into()?;
+        let mut full_reg_value = self.load_register_value(&full_reg_key)?.try_into()?;
         //full_reg_value = self.create_z_ext_or_trunc(full_reg_value, ctx.i64_type())?;
         full_reg_value = self.create_z_ext_or_trunc(full_reg_value, self.get_max_int_type())?;
 
@@ -170,7 +168,7 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
 
         let full_reg_key = reg.largest_enclosing(self.mode);
-        let full_reg_value: IntValue<'_> = self.get_register(full_reg_key)?.try_into()?;
+        let full_reg_value: IntValue<'_> = self.load_register_value(&full_reg_key)?.try_into()?;
         let last_4_cleared = full_reg_value
             .get_type()
             .const_int(0xFFFFFFFFFFFF0000, false);
@@ -181,46 +179,30 @@ impl<'ctx> LifterX86<'ctx> {
         Ok(updated_reg)
     }
 
-    //pub(super) fn experimental_store_register_internal<T>(&self, r: Register, val: T)
-    //where
-    //    PossibleLLVMValueEnum<'ctx>: From<T>,
-    //{
-    //    let value = PossibleLLVMValueEnum::from(val);
-    //    let pr = r.largest_enclosing(self.mode);
-    //    let mut regs_hashmap = self.regs_hashmap.borrow_mut();
-    //    regs_hashmap.insert(pr.into(), value);
-    //}
-
-    pub(super) fn store_register_internal<T>(&self, r: Register, val: T)
+    fn store_register_internal<T>(&self, r: Register, val: T)
     where
         PossibleLLVMValueEnum<'ctx>: From<T>,
     {
         let value = PossibleLLVMValueEnum::from(val);
         let pr = self.get_register_largest_enclosing(&r);
-        //let mut regs_hashmap = self.regs_hashmap.borrow_mut();
-        let regs_hashmap = self.regs_hashmap.get();
-        //regs_hashmap.insert(pr.into(), value);
-        unsafe { (*regs_hashmap).insert(pr, value) };
+        let regs_hashmap = self.regs_hashmap_mut();
+        regs_hashmap.insert(pr.into(), value);
     }
 
-    pub(super) fn store_cpu_flag(&self, flag: ExtendedRegister, val: IntValue<'ctx>) {
+    pub(super) fn store_cpu_flag(&self, flag: ExtendedRegisterEnum, val: IntValue<'ctx>) {
         let reg_type = self.context.custom_width_int_type(1);
         let val = self.create_z_ext_or_trunc(val, reg_type).unwrap();
-        //let mut regs = self.regs_hashmap.borrow_mut();
-        let regs = self.regs_hashmap.get();
-        //regs.insert(flag, val.into());
-        unsafe { (*regs).insert(flag, val.into()) };
+        let regs = self.regs_hashmap_mut();
+        regs.insert(flag, val.into());
     }
 
-    pub(super) fn store_cpu_flag_bool(&self, cpu_flag: ExtendedRegister, val: bool) {
+    pub(super) fn store_cpu_flag_bool(&self, cpu_flag: ExtendedRegisterEnum, val: bool) {
         let bool_ty = &self.context.bool_type();
         let value = match val {
             true => bool_ty.const_int(1, false),
             false => bool_ty.const_zero(),
         };
-        //let mut regs_hashmap = self.regs_hashmap.borrow_mut();
-        let regs_hashmap = self.regs_hashmap.get();
-        //regs_hashmap.insert(cpu_flag, value.into());
-        unsafe { (*regs_hashmap).insert(cpu_flag, value.into()) };
+        let regs_hashmap = self.regs_hashmap_mut();
+        regs_hashmap.insert(cpu_flag, value.into());
     }
 }

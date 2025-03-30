@@ -1,5 +1,5 @@
 use super::{LifterX86, Result};
-use crate::miscellaneous::ExtendedRegister;
+use crate::miscellaneous::ExtendedRegisterEnum;
 
 use inkwell::{values::IntValue, IntPredicate};
 use zydis::{Instruction, Mnemonic, Operands};
@@ -175,7 +175,7 @@ impl LifterX86<'_> {
             "",
         )?;
 
-        let ol_cf = self.load_flag(ExtendedRegister::CF)?;
+        let ol_cf = self.load_flag(ExtendedRegisterEnum::CF)?;
 
         cf_value = builder
             .build_select(is_count_zero, ol_cf, cf_value, "cf_value")?
@@ -184,9 +184,9 @@ impl LifterX86<'_> {
         let of = int_1_ty.const_zero();
 
         let is_not_zero = builder.build_int_compare(IntPredicate::NE, clamped_count, zero, "")?;
-        let old_sf = self.load_flag(ExtendedRegister::SF)?;
-        let old_zf = self.load_flag(ExtendedRegister::ZF)?;
-        let old_pf = self.load_flag(ExtendedRegister::PF)?;
+        let old_sf = self.load_flag(ExtendedRegisterEnum::SF)?;
+        let old_zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
+        let old_pf = self.load_flag(ExtendedRegisterEnum::PF)?;
 
         if instr.mnemonic != Mnemonic::SARX {
             let pf = builder
@@ -199,11 +199,11 @@ impl LifterX86<'_> {
                 .build_select(is_not_zero, self.compute_zero_flag(result)?, old_zf, "")?
                 .into_int_value();
 
-            self.store_cpu_flag(ExtendedRegister::CF, cf_value);
-            self.store_cpu_flag(ExtendedRegister::OF, of);
-            self.store_cpu_flag(ExtendedRegister::PF, pf);
-            self.store_cpu_flag(ExtendedRegister::SF, sf);
-            self.store_cpu_flag(ExtendedRegister::ZF, zf);
+            self.store_cpu_flag(ExtendedRegisterEnum::CF, cf_value);
+            self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
+            self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
+            self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+            self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
         }
 
         self.store_op(dest, result)?;
@@ -288,7 +288,7 @@ impl LifterX86<'_> {
             .build_select(
                 count_is_not_zero,
                 self.create_z_ext_or_trunc(cf_low, int_1_ty)?,
-                self.load_flag(ExtendedRegister::CF)?,
+                self.load_flag(ExtendedRegisterEnum::CF)?,
                 "",
             )?
             .into_int_value();
@@ -343,28 +343,28 @@ impl LifterX86<'_> {
             .build_select(
                 is_count_one,
                 builder.build_xor(result_msb, cf_as_msb, "")?,
-                self.load_flag(ExtendedRegister::OF)?,
+                self.load_flag(ExtendedRegisterEnum::OF)?,
                 "",
             )?
             .into_int_value();
 
         // TODO: re-check
         if instr.mnemonic != Mnemonic::SHLX {
-            self.store_cpu_flag(ExtendedRegister::CF, cf_value);
-            self.store_cpu_flag(ExtendedRegister::OF, of_value);
+            self.store_cpu_flag(ExtendedRegisterEnum::CF, cf_value);
+            self.store_cpu_flag(ExtendedRegisterEnum::OF, of_value);
 
             let sf = builder
                 .build_select(
                     count_is_not_zero,
                     self.compute_sign_flag(result)?,
-                    self.load_flag(ExtendedRegister::SF)?,
+                    self.load_flag(ExtendedRegisterEnum::SF)?,
                     "",
                 )?
                 .into_int_value();
 
-            self.store_cpu_flag(ExtendedRegister::SF, sf);
+            self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
             // TODO: in mergen its lazy flag
-            let old_zf = self.load_flag(ExtendedRegister::ZF)?;
+            let old_zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
             let zf = builder
                 .build_select(
                     count_is_not_zero,
@@ -374,7 +374,7 @@ impl LifterX86<'_> {
                 )?
                 .into_int_value();
 
-            let old_pf = self.load_flag(ExtendedRegister::PF)?;
+            let old_pf = self.load_flag(ExtendedRegisterEnum::PF)?;
             let pf = builder
                 .build_select(
                     count_is_not_zero,
@@ -384,8 +384,8 @@ impl LifterX86<'_> {
                 )?
                 .into_int_value();
 
-            self.store_cpu_flag(ExtendedRegister::PF, pf);
-            self.store_cpu_flag(ExtendedRegister::ZF, zf);
+            self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
+            self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
         }
         self.store_op(dest, result)?;
 
@@ -453,7 +453,7 @@ impl LifterX86<'_> {
             .build_select(
                 count_is_not_zero,
                 self.create_z_ext_or_trunc(last_shifted_bit, self.context.bool_type())?,
-                self.load_flag(ExtendedRegister::CF)?,
+                self.load_flag(ExtendedRegisterEnum::CF)?,
                 "",
             )?
             .into_int_value();
@@ -489,18 +489,24 @@ impl LifterX86<'_> {
             .build_select(
                 is_one,
                 self.create_z_ext_or_trunc(new_of, self.context.bool_type())?,
-                self.load_flag(ExtendedRegister::OF)?,
+                self.load_flag(ExtendedRegisterEnum::OF)?,
                 "",
             )?
             .into_int_value();
 
-        self.store_cpu_flag(ExtendedRegister::CF, cf);
-        self.store_cpu_flag(ExtendedRegister::OF, of);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
 
-        self.store_cpu_flag(ExtendedRegister::SF, self.compute_sign_flag(result_value)?);
-        self.store_cpu_flag(ExtendedRegister::ZF, self.compute_zero_flag(result_value)?);
         self.store_cpu_flag(
-            ExtendedRegister::PF,
+            ExtendedRegisterEnum::SF,
+            self.compute_sign_flag(result_value)?,
+        );
+        self.store_cpu_flag(
+            ExtendedRegisterEnum::ZF,
+            self.compute_zero_flag(result_value)?,
+        );
+        self.store_cpu_flag(
+            ExtendedRegisterEnum::PF,
             self.compute_parity_flag(result_value)?,
         );
 
@@ -572,11 +578,16 @@ impl LifterX86<'_> {
             builder.build_int_compare(IntPredicate::EQ, l_value, l_value_ty.const_zero(), "")?;
 
         of = builder
-            .build_select(is_count_one, of, self.load_flag(ExtendedRegister::OF)?, "")?
+            .build_select(
+                is_count_one,
+                of,
+                self.load_flag(ExtendedRegisterEnum::OF)?,
+                "",
+            )?
             .into_int_value();
 
         let is_not_zero = builder.build_int_compare(IntPredicate::NE, clamped_count, zero, "")?;
-        let old_cf = self.load_flag(ExtendedRegister::CF)?;
+        let old_cf = self.load_flag(ExtendedRegisterEnum::CF)?;
 
         cf_value = builder
             .build_select(is_not_zero, cf_value, old_cf, "cf_value_1_")?
@@ -595,7 +606,7 @@ impl LifterX86<'_> {
             .build_select(
                 is_not_zero,
                 self.compute_sign_flag(result)?,
-                self.load_flag(ExtendedRegister::SF)?,
+                self.load_flag(ExtendedRegisterEnum::SF)?,
                 "",
             )?
             .into_int_value();
@@ -604,7 +615,7 @@ impl LifterX86<'_> {
             .build_select(
                 is_not_zero,
                 self.compute_zero_flag(result)?,
-                self.load_flag(ExtendedRegister::ZF)?,
+                self.load_flag(ExtendedRegisterEnum::ZF)?,
                 "",
             )?
             .into_int_value();
@@ -613,17 +624,17 @@ impl LifterX86<'_> {
             .build_select(
                 is_not_zero,
                 self.compute_parity_flag(result)?,
-                self.load_flag(ExtendedRegister::PF)?,
+                self.load_flag(ExtendedRegisterEnum::PF)?,
                 "",
             )?
             .into_int_value();
 
         if mnemonic != &Mnemonic::SHRX {
-            self.store_cpu_flag(ExtendedRegister::CF, cf_value);
-            self.store_cpu_flag(ExtendedRegister::OF, of);
-            self.store_cpu_flag(ExtendedRegister::SF, sf);
-            self.store_cpu_flag(ExtendedRegister::ZF, zf);
-            self.store_cpu_flag(ExtendedRegister::PF, pf);
+            self.store_cpu_flag(ExtendedRegisterEnum::CF, cf_value);
+            self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
+            self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+            self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
+            self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
         }
         self.store_op(dest, result)?;
 
@@ -720,15 +731,21 @@ impl LifterX86<'_> {
             .into_int_value();
         of = builder.build_int_z_extend(of, int_1_ty, "")?;
 
-        self.store_cpu_flag(ExtendedRegister::CF, cf);
-        self.store_cpu_flag(ExtendedRegister::OF, of);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
 
         self.store_cpu_flag(
-            ExtendedRegister::PF,
+            ExtendedRegisterEnum::PF,
             self.compute_parity_flag(result_value)?,
         );
-        self.store_cpu_flag(ExtendedRegister::SF, self.compute_sign_flag(result_value)?);
-        self.store_cpu_flag(ExtendedRegister::ZF, self.compute_zero_flag(result_value)?);
+        self.store_cpu_flag(
+            ExtendedRegisterEnum::SF,
+            self.compute_sign_flag(result_value)?,
+        );
+        self.store_cpu_flag(
+            ExtendedRegisterEnum::ZF,
+            self.compute_zero_flag(result_value)?,
+        );
 
         self.store_op(dest, result_value)?;
 

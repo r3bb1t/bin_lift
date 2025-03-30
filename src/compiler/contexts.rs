@@ -8,7 +8,7 @@ use inkwell::{
 };
 use zydis::{MachineMode, Register};
 
-use crate::miscellaneous::ExtendedRegister;
+use crate::miscellaneous::ExtendedRegisterEnum;
 
 /// Trait for defining your CPU context for simulation
 pub(super) trait CpuContext {
@@ -16,7 +16,7 @@ pub(super) trait CpuContext {
         self,
         context: &Context,
         mode: MachineMode,
-    ) -> HashMap<ExtendedRegister, BasicValueEnum<'_>>;
+    ) -> HashMap<ExtendedRegisterEnum, BasicValueEnum<'_>>;
 }
 
 /// Marker trait for x86 cpu contexts
@@ -77,11 +77,11 @@ where
         self,
         context: &Context,
         mode: MachineMode,
-    ) -> HashMap<ExtendedRegister, BasicValueEnum<'_>> {
+    ) -> HashMap<ExtendedRegisterEnum, BasicValueEnum<'_>> {
         //let int_type = get_int_type(context, &Register::AX.largest_enclosing(mode), &mode);
         let int_type =
             context.custom_width_int_type(Register::AX.largest_enclosing(mode).width(mode).into());
-        let mut regs_hashmap: HashMap<ExtendedRegister, IntValue> = HashMap::new();
+        let mut regs_hashmap: HashMap<ExtendedRegisterEnum, IntValue> = HashMap::new();
 
         let rax = int_type.const_int(self.rax.into(), false);
         let rbx = int_type.const_int(self.rbx.into(), false);
@@ -137,25 +137,26 @@ where
         regs_hashmap.insert(Register::R15B.largest_enclosing(mode).into(), r15);
         regs_hashmap.insert(Register::RIP.largest_enclosing(mode).into(), rip);
 
-        regs_hashmap.insert(ExtendedRegister::CF, cf);
-        regs_hashmap.insert(ExtendedRegister::PF, pf);
-        regs_hashmap.insert(ExtendedRegister::AF, af);
-        regs_hashmap.insert(ExtendedRegister::ZF, zf);
-        regs_hashmap.insert(ExtendedRegister::SF, sf);
-        regs_hashmap.insert(ExtendedRegister::TF, tf);
-        regs_hashmap.insert(ExtendedRegister::IF, r#if);
-        regs_hashmap.insert(ExtendedRegister::DF, df);
-        regs_hashmap.insert(ExtendedRegister::OF, of);
-        regs_hashmap.insert(ExtendedRegister::IOPL, iopl);
-        regs_hashmap.insert(ExtendedRegister::NT, nt);
-        regs_hashmap.insert(ExtendedRegister::RF, rf);
-        regs_hashmap.insert(ExtendedRegister::VM, vm);
-        regs_hashmap.insert(ExtendedRegister::AC, ac);
-        regs_hashmap.insert(ExtendedRegister::VIF, vif);
-        regs_hashmap.insert(ExtendedRegister::VIP, vip);
-        regs_hashmap.insert(ExtendedRegister::ID, id);
+        regs_hashmap.insert(ExtendedRegisterEnum::CF, cf);
+        regs_hashmap.insert(ExtendedRegisterEnum::PF, pf);
+        regs_hashmap.insert(ExtendedRegisterEnum::AF, af);
+        regs_hashmap.insert(ExtendedRegisterEnum::ZF, zf);
+        regs_hashmap.insert(ExtendedRegisterEnum::SF, sf);
+        regs_hashmap.insert(ExtendedRegisterEnum::TF, tf);
+        regs_hashmap.insert(ExtendedRegisterEnum::IF, r#if);
+        regs_hashmap.insert(ExtendedRegisterEnum::DF, df);
+        regs_hashmap.insert(ExtendedRegisterEnum::OF, of);
+        regs_hashmap.insert(ExtendedRegisterEnum::IOPL, iopl);
+        regs_hashmap.insert(ExtendedRegisterEnum::NT, nt);
+        regs_hashmap.insert(ExtendedRegisterEnum::RF, rf);
+        regs_hashmap.insert(ExtendedRegisterEnum::VM, vm);
+        regs_hashmap.insert(ExtendedRegisterEnum::AC, ac);
+        regs_hashmap.insert(ExtendedRegisterEnum::VIF, vif);
+        regs_hashmap.insert(ExtendedRegisterEnum::VIP, vip);
+        regs_hashmap.insert(ExtendedRegisterEnum::ID, id);
 
-        let mut resulting_hashmap: HashMap<ExtendedRegister, BasicValueEnum<'_>> = HashMap::new();
+        let mut resulting_hashmap: HashMap<ExtendedRegisterEnum, BasicValueEnum<'_>> =
+            HashMap::new();
         for (k, v) in regs_hashmap {
             resulting_hashmap.insert(k, v.as_basic_value_enum());
         }

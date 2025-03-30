@@ -1,7 +1,7 @@
 use super::{LifterX86, Result};
-use crate::miscellaneous::ExtendedRegister;
+use crate::miscellaneous::ExtendedRegisterEnum;
 
-use inkwell::{builder, values::IntValue, IntPredicate};
+use inkwell::{values::IntValue, IntPredicate};
 use zydis::{Instruction, Operands};
 
 impl LifterX86<'_> {
@@ -17,7 +17,7 @@ impl LifterX86<'_> {
         let is_zero =
             builder.build_int_compare(IntPredicate::EQ, r_value, r_value_ty.const_zero(), "")?;
 
-        self.store_cpu_flag(ExtendedRegister::ZF, is_zero);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, is_zero);
 
         let bit_width = r_value_ty.get_bit_width();
 
@@ -69,7 +69,7 @@ impl LifterX86<'_> {
         let is_zero =
             builder.build_int_compare(IntPredicate::EQ, r_value, int_type.const_zero(), "")?;
 
-        self.store_cpu_flag(ExtendedRegister::ZF, is_zero);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, is_zero);
 
         let int_width = int_type.get_bit_width();
 
@@ -129,7 +129,7 @@ impl LifterX86<'_> {
         let cf =
             builder.build_int_compare(IntPredicate::NE, and, and.get_type().const_zero(), "")?;
 
-        self.store_cpu_flag(ExtendedRegister::CF, cf);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
 
         Ok(())
     }
@@ -201,7 +201,7 @@ impl LifterX86<'_> {
         let one = bit.get_type().const_int(1, false);
 
         bit = builder.build_and(bit, one, "")?;
-        self.store_cpu_flag(ExtendedRegister::CF, bit);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, bit);
 
         let mask = builder.build_left_shift(
             base_val.get_type().const_int(1, false),
@@ -238,7 +238,7 @@ impl LifterX86<'_> {
 
         bit = builder.build_and(bit, one, "")?;
 
-        self.store_cpu_flag(ExtendedRegister::CF, bit);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, bit);
 
         let mut mask = builder.build_left_shift(
             base_val.get_type().const_int(1, false),
@@ -313,7 +313,7 @@ impl LifterX86<'_> {
 
         bit = builder.build_and(bit, one, "")?;
 
-        self.store_cpu_flag(ExtendedRegister::CF, bit);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, bit);
 
         let mask = builder.build_left_shift(
             base_val.get_type().const_int(1, false),

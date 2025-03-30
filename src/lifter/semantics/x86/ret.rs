@@ -1,5 +1,5 @@
 use super::{LifterX86, Result};
-use crate::miscellaneous::ExtendedRegister;
+use crate::miscellaneous::ExtendedRegisterEnum;
 
 use inkwell::{values::IntValue, AddressSpace};
 use zydis::{Instruction, Operands, Register};
@@ -16,7 +16,7 @@ impl LifterX86<'_> {
         let sp_reg_width = sp_reg_largest_enclosing.width(self.mode) / 8;
 
         let size_to_add = int_ty.const_int(sp_reg_width as u64, false);
-        let sp_value = self.load_reg_internal(&sp_reg)?.try_into()?;
+        let sp_value = self.load_register_value(&sp_reg)?.try_into()?;
         let curr_stack_pointer_val = self.builder.build_int_add(
             //self.load_stack_pointer_value(),
             sp_value,
@@ -33,7 +33,7 @@ impl LifterX86<'_> {
             )?;
             // TODO: Unwrap here
             let l2: IntValue<'_> = builder.build_load(int_ty, addr2, "")?.try_into().unwrap();
-            self.store_cpu_flag(ExtendedRegister::CS, l2);
+            self.store_cpu_flag(ExtendedRegisterEnum::CS, l2);
             // TODO: Fix
             //self.store_op(
             //    &DecodedOperandKind::Reg(sp_reg),

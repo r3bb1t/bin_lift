@@ -1,4 +1,4 @@
-use crate::miscellaneous::ExtendedRegister;
+use crate::miscellaneous::ExtendedRegisterEnum;
 
 use super::{LifterX86, Result};
 
@@ -6,6 +6,7 @@ use inkwell::values::IntValue;
 use zydis::{ffi::DecodedOperandKind, Instruction, InstructionAttributes, Mnemonic, Operands};
 
 impl LifterX86<'_> {
+    // NOTE: checked
     pub(super) fn lift_bswap<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let builder = &self.builder;
         let ops = instr.operands();
@@ -25,7 +26,7 @@ impl LifterX86<'_> {
 
         for i in 0..l_value_ty.get_bit_width() / 8 {
             let byte = builder.build_right_shift(
-                builder.build_and(l_value, mask, "")?,
+                builder.build_and(l_value, mask, "shlresultmsb")?,
                 l_value_ty.const_int((i * 8).into(), false),
                 false,
                 "",
@@ -42,6 +43,7 @@ impl LifterX86<'_> {
         Ok(())
     }
 
+    // NOTE: checked
     pub(super) fn lift_mov<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let builder = &self.builder;
         let operands = instr.operands();
@@ -49,28 +51,28 @@ impl LifterX86<'_> {
         let dest = &operands[0];
         let src = &operands[1];
 
-        let dst_op_size = &dest.size;
-        let s_ext_ty = self.context.custom_width_int_type((*dst_op_size).into());
+        let dst_size = &dest.size;
+        let s_ext_ty = self.context.custom_width_int_type((*dst_size).into());
 
         // TODO: In future, double check that we indeed need src.size
-        let rhs: IntValue<'_> = self.load_single_op(src, src.size)?.try_into()?;
+        let r_value: IntValue<'_> = self.load_single_op(src, src.size)?.try_into()?;
 
         let mut s_ext_rhs = match instr.mnemonic {
-            Mnemonic::MOV => rhs,
+            Mnemonic::MOV => r_value,
             Mnemonic::MOVSX | Mnemonic::MOVSXD => {
                 let name = if instr.mnemonic == Mnemonic::MOVSXD {
                     "movsxd_"
                 } else {
                     "movsx_"
                 };
-                builder.build_int_s_extend(rhs, s_ext_ty, name)?
+                builder.build_int_s_extend(r_value, s_ext_ty, name)?
             }
-            Mnemonic::MOVZX => builder.build_int_z_extend(rhs, s_ext_ty, "movzx_")?,
+            Mnemonic::MOVZX => builder.build_int_z_extend(r_value, s_ext_ty, "movzx_")?,
             _ => unreachable!(),
         };
 
         if let DecodedOperandKind::Imm(_) = &dest.kind {
-            s_ext_rhs = self.load_single_op(dest, *dst_op_size)?.try_into()?;
+            s_ext_rhs = self.load_single_op(dest, *dst_size)?.try_into()?;
         }
 
         self.store_op(dest, s_ext_rhs)?;
@@ -80,7 +82,7 @@ impl LifterX86<'_> {
 
     pub(super) fn lift_movs_x<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let builder = &self.builder;
-        let context = self.context;
+        let ctx = self.context;
         let ops = instr.operands();
         let size = &ops[1].size.clone();
 
@@ -89,25 +91,34 @@ impl LifterX86<'_> {
 
         let is_rep = instr.attributes.contains(InstructionAttributes::HAS_REP);
 
-        let df = self.load_flag(ExtendedRegister::DF)?;
+        let df = self.load_flag(ExtendedRegisterEnum::DF)?;
 
         let byte_size_value: u64 = (*size).into();
 
         let src_op = if is_rep { &ops[2 + 1] } else { &ops[2] };
         let dst_op = if is_rep { &ops[3 + 1] } else { &ops[3] };
+
+        let src_op_ty = ctx.custom_width_int_type(src_op.size.into());
         let direction = builder
             .build_select(
                 df,
-                context
-                    .custom_width_int_type(src_op.size.into())
-                    .const_int(1 * byte_size_value, false),
-                context
-                    .custom_width_int_type(src_op.size.into())
-                    //.const_int(u64::MAX * byte_size_value, false),
-                    .const_int(u64::MAX.wrapping_mul(byte_size_value), false),
+                src_op_ty.const_int(byte_size_value, false),
+                src_op_ty.const_int(u64::MAX.wrapping_mul(byte_size_value), false),
                 "",
             )?
             .into_int_value();
+
+        //let direction = builder
+        //    .build_select(
+        //        df,
+        //        ctx.custom_width_int_type(src_op.size.into())
+        //            .const_int(1 * byte_size_value, false),
+        //        ctx.custom_width_int_type(src_op.size.into())
+        //            //.const_int(u64::MAX * byte_size_value, false),
+        //            .const_int(u64::MAX.wrapping_mul(byte_size_value), false),
+        //        "",
+        //    )?
+        //    .into_int_value();
 
         let src_value: IntValue<'_> = self.load_single_op(src_op, src_op.size)?.try_into()?;
         let dst_value: IntValue<'_> = self.load_single_op(dst_op, dst_op.size)?.try_into()?;
@@ -147,7 +158,8 @@ impl LifterX86<'_> {
         let dst = &ops[0];
         let src = &ops[1];
 
-        let [lhs, rhs] = self.load_two_first_ints(ops)?;
+        let rhs: IntValue<'_> = self.load_single_op(src, src.size)?.try_into()?;
+        let lhs: IntValue<'_> = self.load_single_op(dst, dst.size)?.try_into()?;
 
         self.store_op(dst, rhs)?;
         self.store_op(src, lhs)?;

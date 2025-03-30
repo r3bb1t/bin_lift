@@ -12,11 +12,12 @@ mod dataxfer;
 mod flagop;
 mod logical;
 mod misc;
+mod nop;
 mod pop;
 mod push;
 mod ret;
 mod rotate;
-mod settcc;
+mod setcc;
 mod shift;
 mod stringop;
 mod system;
@@ -36,11 +37,22 @@ impl Lifter for LifterX86<'_> {
         //    return Ok(());
         //}
 
+        let current_ip = self.runtime_address.get();
+        let updated_ip = current_ip + u64::from(instr.length);
+        self.runtime_address.set(updated_ip);
+
         #[cfg(debug_assertions)]
-        self.builder.build_alloca(
-            self.context.i128_type(),
-            &format!("debug_{}_", instr.mnemonic),
-        )?;
+        {
+            let fmt = zydis::Formatter::intel();
+            let formatted = fmt
+                .format(None, instr)
+                .unwrap_or("unformattable".to_string());
+            // FIXME: Ip tracking isn't implemented yet
+            let disassembly = format!("0x{updated_ip:<24X} {} ; ", formatted);
+            println!("{disassembly}");
+            self.builder
+                .build_alloca(self.context.i128_type(), &disassembly)?;
+        }
 
         match instr.mnemonic {
             // binary
@@ -92,6 +104,7 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::CWDE => self.lift_cwde(),
 
             // dataxfer
+            // NOTE: checked
             Mnemonic::BSWAP => self.lift_bswap(instr),
             Mnemonic::MOVZX | Mnemonic::MOVSX | Mnemonic::MOVSXD | Mnemonic::MOV => {
                 self.lift_mov(instr)
@@ -120,7 +133,7 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::LEA => self.lift_lea(instr),
 
             // nop
-            Mnemonic::NOP => Ok(()),
+            Mnemonic::NOP => self.lift_nop(),
 
             // pop
             Mnemonic::POP => self.lift_pop(instr),
@@ -134,6 +147,7 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::RET => self.lift_ret(instr),
 
             // rotate
+            // NOTE: checked
             Mnemonic::RCL => self.lift_rcl(instr),
             Mnemonic::RCR => self.lift_rcr(instr),
             Mnemonic::ROL => self.lift_rol(instr),
@@ -167,6 +181,7 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::SHRD => self.lift_shrd(instr),
 
             // Stringop
+            // NOTE: checked
             Mnemonic::MOVSB | Mnemonic::MOVSW | Mnemonic::MOVSD | Mnemonic::MOVSQ => {
                 self.lift_movs_x(instr)
             }

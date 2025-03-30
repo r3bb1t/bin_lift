@@ -1,7 +1,12 @@
 pub(super) mod error;
 pub(crate) use error::{Error, Result};
 
-use crate::miscellaneous::ExtendedRegister;
+use crate::miscellaneous::ExtendedRegisterEnum;
+use std::{
+    cell::{Cell, UnsafeCell},
+    collections::HashMap,
+};
+
 use definintions::{PossibleLLVMTypeEnum, PossibleLLVMValueEnum};
 use inkwell::{
     builder::Builder,
@@ -10,7 +15,6 @@ use inkwell::{
     types::IntType,
     values::{FunctionValue, IntValue, PointerValue},
 };
-use std::{cell::UnsafeCell, collections::HashMap};
 use zydis::{ffi::MemoryInfo, MachineMode, Register, RegisterClass};
 
 mod common;
@@ -30,8 +34,9 @@ pub struct LifterX86<'ctx> {
     pub mode: MachineMode,
     //pub(super) regs_hashmap:
     //    RefCell<HashMap<ExtendedRegister, PossibleLLVMValueEnum<'ctx>>>,
-    pub(super) regs_hashmap: UnsafeCell<HashMap<ExtendedRegister, PossibleLLVMValueEnum<'ctx>>>,
+    pub(super) regs_hashmap: UnsafeCell<HashMap<ExtendedRegisterEnum, PossibleLLVMValueEnum<'ctx>>>,
     pub stackmemory: PointerValue<'ctx>,
+    pub runtime_address: Cell<u64>,
 }
 
 impl<'ctx> LifterX86<'ctx> {
@@ -40,6 +45,7 @@ impl<'ctx> LifterX86<'ctx> {
         mode: MachineMode,
         func_value: FunctionValue<'ctx>,
         module: Module<'ctx>,
+        runtime_address: u64,
     ) -> Result<Self> {
         let builder = context.create_builder();
 
@@ -68,6 +74,7 @@ impl<'ctx> LifterX86<'ctx> {
             regs_hashmap: UnsafeCell::new(regs_hashmap),
             //func_value,
             stackmemory,
+            runtime_address: Cell::new(runtime_address),
         };
         Ok(s)
     }
@@ -176,7 +183,7 @@ impl<'ctx> LifterX86<'ctx> {
     pub(crate) fn retdec_calc_mem_operand(&self, mem: &MemoryInfo) -> Result<IntValue<'ctx>> {
         let builder = &self.builder;
 
-        let base_r = self.load_reg_internal(&mem.base).ok();
+        let base_r = self.load_register_value(&mem.base).ok();
 
         let t = match base_r {
             Some(PossibleLLVMValueEnum::FloatValue(_)) => unreachable!(),
@@ -194,7 +201,7 @@ impl<'ctx> LifterX86<'ctx> {
             None
         };
 
-        let mut idx_r = self.load_reg_internal(&mem.index).ok();
+        let mut idx_r = self.load_register_value(&mem.index).ok();
 
         if let Some(PossibleLLVMValueEnum::IntValue(idx_r_)) = idx_r {
             let scale = idx_r_.get_type().const_int(mem.scale.into(), false);
@@ -258,7 +265,7 @@ impl<'ctx> LifterX86<'ctx> {
 fn prep_regs_hashmap_experimental<'ctx>(
     fn_val: &FunctionValue<'ctx>,
     mode: &MachineMode,
-) -> HashMap<ExtendedRegister, PossibleLLVMValueEnum<'ctx>> {
+) -> HashMap<ExtendedRegisterEnum, PossibleLLVMValueEnum<'ctx>> {
     let mut registers_hashmap = HashMap::new();
     let regs: [Register; 17] =
         crate::compiler::ALL_REGS_IN_MIN_SIZE.map(|reg| reg.largest_enclosing(*mode));

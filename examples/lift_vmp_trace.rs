@@ -47,7 +47,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let instrs_count = instructions.len();
 
     //let lifter = LifterX86::new(&context, mode);
-    let compiler = Compiler::new_with_x86_lifter(&context, mode)?;
+    const START_ADDRESS: u64 = 0x1400118d9;
+    let compiler = Compiler::new_with_x86_lifter(&context, mode, START_ADDRESS)?;
     //let lifter = LifterX86::new(&context, mode)?;
     compiler.lift_function(&instructions)?;
     let elapsed = now.elapsed();

@@ -18,16 +18,14 @@ impl LifterX86<'_> {
         let result = self.builder.build_int_sub(rsp_value, val, "")?;
 
         if let DecodedOperandKind::Reg(register) = &src.kind {
-            #[cfg(debug_assertions)]
-            {
-                let dst_reg: IntValue<'_> = self.load_reg_internal(register)?.try_into()?;
-                dbg!(dst_reg.is_const());
-            }
+            let dst_reg: IntValue<'_> = self.load_register_value(register)?.try_into()?;
+            self.runtime_address
+                .set(dst_reg.get_sign_extended_constant().unwrap() as u64);
             self.store_op(rsp, rsp_value)?;
         }
 
         self.store_op(rsp, result)?;
-        let push_into_rsp: IntValue<'_> = self.get_register(Register::IP)?.try_into()?;
+        let push_into_rsp: IntValue<'_> = self.load_register_value(&Register::IP)?.try_into()?;
         self.store_op(rsp_memory, push_into_rsp)?;
 
         Ok(())

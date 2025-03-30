@@ -1,8 +1,5 @@
-// TODO: Implement the following:
-// ADC, ADDPD, ADDPS, ADDSD, ADDSS, CMP, DEC, DIVPD, DIVPS, DIVSD, DIVSS, IMUL, INC,
-// MULPD, MULSD, MULSS, MULX, NEG, SBB, SUB (implement flags for it), SUBPD, SUBPS, SUBSD, SUBSS
 use super::{LifterX86, Result};
-use crate::miscellaneous::ExtendedRegister;
+use crate::miscellaneous::ExtendedRegisterEnum;
 
 use inkwell::{values::IntValue, IntPredicate};
 use zydis::{Instruction, Operands};
@@ -14,7 +11,7 @@ impl<'ctx> LifterX86<'ctx> {
 
         let [lhs, rhs] = self.load_two_first_ints(ops)?;
 
-        let cf = self.load_flag(ExtendedRegister::CF)?;
+        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
         let cf_extended = builder.build_int_z_extend(cf, lhs.get_type(), "cf_extended")?;
 
         let temp_result = builder.build_int_add(lhs, rhs, "adc_temp")?;
@@ -37,12 +34,12 @@ impl<'ctx> LifterX86<'ctx> {
         let sf = self.compute_sign_flag(result)?;
         let zf = self.compute_zero_flag(result)?;
 
-        self.store_cpu_flag(ExtendedRegister::AF, af);
-        self.store_cpu_flag(ExtendedRegister::CF, cf_final);
-        self.store_cpu_flag(ExtendedRegister::OF, of);
-        self.store_cpu_flag(ExtendedRegister::PF, pf);
-        self.store_cpu_flag(ExtendedRegister::SF, sf);
-        self.store_cpu_flag(ExtendedRegister::ZF, zf);
+        self.store_cpu_flag(ExtendedRegisterEnum::AF, af);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf_final);
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
 
         self.store_op(&ops[0], result)?;
         Ok(())
@@ -67,9 +64,9 @@ impl<'ctx> LifterX86<'ctx> {
         let cf_val = self.generate_carry_add(&result, &lhs)?;
         let of_val = self.generate_overflow_add(&result, &lhs, &rhs)?;
 
-        self.store_cpu_flag(ExtendedRegister::AF, af_val);
-        self.store_cpu_flag(ExtendedRegister::CF, cf_val);
-        self.store_cpu_flag(ExtendedRegister::OF, of_val);
+        self.store_cpu_flag(ExtendedRegisterEnum::AF, af_val);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf_val);
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of_val);
 
         self.calculate_and_store_common_flags_for_add_sub(result)?;
 
@@ -156,12 +153,12 @@ impl<'ctx> LifterX86<'ctx> {
 
         let pf = self.compute_parity_flag(cmp_result)?;
 
-        self.store_cpu_flag(ExtendedRegister::AF, af);
-        self.store_cpu_flag(ExtendedRegister::CF, cf);
-        self.store_cpu_flag(ExtendedRegister::OF, of);
-        self.store_cpu_flag(ExtendedRegister::PF, pf);
-        self.store_cpu_flag(ExtendedRegister::SF, sf);
-        self.store_cpu_flag(ExtendedRegister::ZF, zf);
+        self.store_cpu_flag(ExtendedRegisterEnum::AF, af);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
 
         Ok(())
     }
@@ -192,11 +189,11 @@ impl<'ctx> LifterX86<'ctx> {
         let sf = self.compute_sign_flag(result)?;
         let zf = self.compute_zero_flag(result)?;
 
-        self.store_cpu_flag(ExtendedRegister::AF, af);
-        self.store_cpu_flag(ExtendedRegister::OF, of);
-        self.store_cpu_flag(ExtendedRegister::PF, pf);
-        self.store_cpu_flag(ExtendedRegister::SF, sf);
-        self.store_cpu_flag(ExtendedRegister::ZF, zf);
+        self.store_cpu_flag(ExtendedRegisterEnum::AF, af);
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
 
         self.store_op(op, result)?;
 
@@ -229,11 +226,11 @@ impl<'ctx> LifterX86<'ctx> {
         let sf = self.compute_sign_flag(result)?;
         let zf = self.compute_zero_flag(result)?;
 
-        self.store_cpu_flag(ExtendedRegister::AF, af);
-        self.store_cpu_flag(ExtendedRegister::OF, of);
-        self.store_cpu_flag(ExtendedRegister::PF, pf);
-        self.store_cpu_flag(ExtendedRegister::SF, sf);
-        self.store_cpu_flag(ExtendedRegister::ZF, zf);
+        self.store_cpu_flag(ExtendedRegisterEnum::AF, af);
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
 
         self.store_op(op, result)?;
 
@@ -278,7 +275,7 @@ impl<'ctx> LifterX86<'ctx> {
 
         // Store OF flag
         if op.size > 32 {
-            self.store_cpu_flag_bool(ExtendedRegister::OF, false);
+            self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false);
         } else {
             let is_zero = builder.build_int_compare(
                 IntPredicate::NE,
@@ -288,14 +285,14 @@ impl<'ctx> LifterX86<'ctx> {
             )?;
             let of = builder.build_int_compare(IntPredicate::EQ, result, r_value, "")?;
             let of = builder.build_select(is_zero, of, of.get_type().const_zero(), "neg_of")?;
-            self.store_cpu_flag(ExtendedRegister::OF, of.into_int_value());
+            self.store_cpu_flag(ExtendedRegisterEnum::OF, of.into_int_value());
         };
 
-        self.store_cpu_flag(ExtendedRegister::AF, af);
-        self.store_cpu_flag(ExtendedRegister::CF, cf);
-        self.store_cpu_flag(ExtendedRegister::PF, pf);
-        self.store_cpu_flag(ExtendedRegister::SF, sf);
-        self.store_cpu_flag(ExtendedRegister::ZF, zf);
+        self.store_cpu_flag(ExtendedRegisterEnum::AF, af);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
 
         Ok(())
     }
@@ -305,8 +302,10 @@ impl<'ctx> LifterX86<'ctx> {
         let ops = instr.operands();
 
         let [l_value, r_value] = self.load_two_first_ints(ops)?;
-        let cf =
-            self.create_z_ext_or_trunc(self.load_flag(ExtendedRegister::CF)?, r_value.get_type())?;
+        let cf = self.create_z_ext_or_trunc(
+            self.load_flag(ExtendedRegisterEnum::CF)?,
+            r_value.get_type(),
+        )?;
 
         let tmp_result = builder.build_int_add(r_value, cf, "")?;
         let result = builder.build_int_sub(l_value, tmp_result, "")?;
@@ -320,12 +319,12 @@ impl<'ctx> LifterX86<'ctx> {
         let sf = self.compute_sign_flag(result)?;
         let zf = self.compute_zero_flag(result)?;
 
-        self.store_cpu_flag(ExtendedRegister::AF, af);
-        self.store_cpu_flag(ExtendedRegister::CF, new_cf);
-        self.store_cpu_flag(ExtendedRegister::OF, of);
-        self.store_cpu_flag(ExtendedRegister::PF, pf);
-        self.store_cpu_flag(ExtendedRegister::SF, sf);
-        self.store_cpu_flag(ExtendedRegister::ZF, zf);
+        self.store_cpu_flag(ExtendedRegisterEnum::AF, af);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, new_cf);
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
 
         Ok(())
     }
@@ -350,9 +349,9 @@ impl<'ctx> LifterX86<'ctx> {
         let cf_val = self.generate_borrow_sub(&result, &lhs)?;
         let of_val = self.generate_overflow_sub(&result, &lhs, &rhs)?;
 
-        self.store_cpu_flag(ExtendedRegister::AF, af_val);
-        self.store_cpu_flag(ExtendedRegister::CF, cf_val);
-        self.store_cpu_flag(ExtendedRegister::OF, of_val);
+        self.store_cpu_flag(ExtendedRegisterEnum::AF, af_val);
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf_val);
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of_val);
 
         self.calculate_and_store_common_flags_for_add_sub(result)?;
 
@@ -387,9 +386,9 @@ impl<'ctx> LifterX86<'ctx> {
 
     /// Calculate the following flags: SF, ZF, PF
     fn calculate_and_store_common_flags_for_add_sub(&self, result: IntValue<'ctx>) -> Result<()> {
-        self.store_cpu_flag(ExtendedRegister::SF, self.compute_sign_flag(result)?);
-        self.store_cpu_flag(ExtendedRegister::ZF, self.compute_zero_flag(result)?);
-        self.store_cpu_flag(ExtendedRegister::PF, self.compute_parity_flag(result)?);
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, self.compute_sign_flag(result)?);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, self.compute_zero_flag(result)?);
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, self.compute_parity_flag(result)?);
 
         Ok(())
     }

@@ -1,4 +1,4 @@
-use crate::miscellaneous::ExtendedRegister;
+use crate::miscellaneous::ExtendedRegisterEnum;
 
 use super::{LifterX86, Result};
 
@@ -10,7 +10,7 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let cf = self.load_flag(ExtendedRegister::CF)?;
+        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
 
         let condition = builder.build_int_compare(
             IntPredicate::EQ,
@@ -27,8 +27,8 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let zf = self.load_flag(ExtendedRegister::ZF)?;
-        let cf = self.load_flag(ExtendedRegister::CF)?;
+        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
+        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
 
         let condition = builder.build_or(zf, cf, "cmovbe_condition")?;
 
@@ -40,8 +40,8 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let sf = self.load_flag(ExtendedRegister::SF)?;
-        let of = self.load_flag(ExtendedRegister::OF)?;
+        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
+        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
 
         let condition = builder.build_int_compare(
             IntPredicate::NE,
@@ -58,9 +58,9 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let zf = self.load_flag(ExtendedRegister::ZF)?;
-        let sf = self.load_flag(ExtendedRegister::SF)?;
-        let of = self.load_flag(ExtendedRegister::OF)?;
+        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
+        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
+        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
 
         let sf_neg_of = builder.build_int_compare(IntPredicate::NE, sf, of, "sf_neg_of_cmovle")?;
         let condition = builder.build_or(zf, sf_neg_of, "cmovnle_condition")?;
@@ -73,7 +73,7 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let cf = self.load_flag(ExtendedRegister::CF)?;
+        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
         let not_cf = builder.build_not(cf, "cmovnb_not_cf")?;
 
         self.cmov_helper(ops, not_cf, "cmovnb_compare")?;
@@ -84,8 +84,8 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let cf = self.load_flag(ExtendedRegister::CF)?;
-        let zf = self.load_flag(ExtendedRegister::ZF)?;
+        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
+        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
 
         let condition = builder.build_and(
             builder.build_not(cf, "cmovnbe_not_cf")?,
@@ -101,8 +101,8 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let sf = self.load_flag(ExtendedRegister::SF)?;
-        let of = self.load_flag(ExtendedRegister::OF)?;
+        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
+        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
 
         let condition = builder.build_int_compare(IntPredicate::EQ, sf, of, "cmovl_compare")?;
 
@@ -114,9 +114,9 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let zf = self.load_flag(ExtendedRegister::ZF)?;
-        let sf = self.load_flag(ExtendedRegister::SF)?;
-        let of = self.load_flag(ExtendedRegister::OF)?;
+        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
+        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
+        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
 
         let condition = builder.build_and(
             builder.build_not(zf, "not_zf_cmovnle")?,
@@ -132,7 +132,7 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let of = self.load_flag(ExtendedRegister::OF)?;
+        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
         let not_of = builder.build_not(of, "not_of_")?;
 
         self.cmov_helper(ops, not_of, "cmovno_compare")?;
@@ -142,7 +142,7 @@ impl<'ctx> LifterX86<'ctx> {
     pub(super) fn lift_cmovnp<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let ops = instr.operands();
 
-        let pf = self.load_flag(ExtendedRegister::PF)?;
+        let pf = self.load_flag(ExtendedRegisterEnum::PF)?;
         let not_pf = self.builder.build_not(pf, "cmovnp_not_pf")?;
 
         self.cmov_helper(ops, not_pf, "cmovp_compare")?;
@@ -153,7 +153,7 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let sf = self.load_flag(ExtendedRegister::SF)?;
+        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
         let condition = builder.build_int_compare(
             IntPredicate::EQ,
             sf,
@@ -169,7 +169,7 @@ impl<'ctx> LifterX86<'ctx> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let zf = self.load_flag(ExtendedRegister::ZF)?;
+        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
 
         let condition = builder.build_int_compare(
             IntPredicate::EQ,
@@ -185,7 +185,7 @@ impl<'ctx> LifterX86<'ctx> {
     pub(super) fn lift_cmovo<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let ops = instr.operands();
 
-        let of = self.load_flag(ExtendedRegister::OF)?;
+        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
 
         self.cmov_helper(ops, of, "cmovo_compare")?;
         Ok(())
@@ -194,7 +194,7 @@ impl<'ctx> LifterX86<'ctx> {
     pub(super) fn lift_cmovp<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let ops = instr.operands();
 
-        let pf = self.load_flag(ExtendedRegister::PF)?;
+        let pf = self.load_flag(ExtendedRegisterEnum::PF)?;
 
         self.cmov_helper(ops, pf, "cmovp_compare")?;
         Ok(())
@@ -203,7 +203,7 @@ impl<'ctx> LifterX86<'ctx> {
     pub(super) fn lift_cmovs<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let ops = instr.operands();
 
-        let sf = self.load_flag(ExtendedRegister::SF)?;
+        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
 
         self.cmov_helper(ops, sf, "cmovp_compare")?;
         Ok(())
@@ -212,7 +212,7 @@ impl<'ctx> LifterX86<'ctx> {
     pub(super) fn lift_cmovz<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let ops = instr.operands();
 
-        let zf = self.load_flag(ExtendedRegister::ZF)?;
+        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
 
         self.cmov_helper(ops, zf, "cmovp_compare")?;
         Ok(())

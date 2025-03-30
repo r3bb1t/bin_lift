@@ -1,6 +1,7 @@
-use crate::miscellaneous::ExtendedRegister;
-
 use super::{PossibleLLVMValueEnum, Result};
+use crate::miscellaneous::ExtendedRegisterEnum;
+
+use std::collections::HashMap;
 
 use inkwell::values::IntValue;
 use zydis::{
@@ -11,21 +12,23 @@ use zydis::{
 use super::LifterX86;
 
 impl<'ctx> LifterX86<'ctx> {
-    //pub(super) fn experimental_get_register(
-    //    &self,
-    //    r: Register,
-    //) -> Result<PossibleLLVMValueEnum<'ctx>> {
-    //    let pr = r.largest_enclosing(self.mode);
-    //    let regs_hashmap = self.regs_hashmap.borrow();
-    //    regs_hashmap
-    //        .get(&pr.into())
-    //        .copied()
-    //        .ok_or(Error::RegUnwrapError(pr.into()))
-    //}
+    #[allow(clippy::mut_from_ref)]
+    pub(super) fn regs_hashmap_mut(
+        &self,
+    ) -> &mut HashMap<ExtendedRegisterEnum, PossibleLLVMValueEnum<'ctx>> {
+        unsafe { &mut (*self.regs_hashmap.get()) }
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    pub(super) fn regs_hashmap(
+        &self,
+    ) -> &HashMap<ExtendedRegisterEnum, PossibleLLVMValueEnum<'ctx>> {
+        unsafe { &(*self.regs_hashmap.get()) }
+    }
 
     /// Wrapper because of zydis largest_enclosing doesnt work correctly with SP
-    pub(super) fn get_register_largest_enclosing(&self, register: &Register) -> ExtendedRegister {
-        let pr = if [Register::RBP, Register::EBP, Register::BP].contains(register) {
+    pub(super) fn get_register_largest_enclosing(&self, register: &Register) -> Register {
+        if [Register::RBP, Register::EBP, Register::BP].contains(register) {
             match self.mode {
                 MachineMode::LONG_64 => Register::RBP,
                 MachineMode::LEGACY_32 => Register::EBP,
@@ -39,18 +42,12 @@ impl<'ctx> LifterX86<'ctx> {
             }
         } else {
             register.largest_enclosing(self.mode)
-        };
-
-        pr.into()
+        }
     }
     pub(super) fn get_register(&self, r: Register) -> Result<PossibleLLVMValueEnum<'ctx>> {
         let pr = self.get_register_largest_enclosing(&r);
-        //let pr = r.largest_enclosing(self.mode);
-        let regs_hashmap = self.regs_hashmap.get();
-        let lookup_result = unsafe {
-            (*regs_hashmap).get(&pr).copied()
-            //.ok_or(Error::RegUnwrapError(pr))
-        };
+
+        let lookup_result = self.regs_hashmap().get(&pr.into()).copied();
 
         let reg_val = match lookup_result {
             Some(val) => val,
@@ -64,8 +61,9 @@ impl<'ctx> LifterX86<'ctx> {
     pub(crate) fn calc_mem_operand(&self, mem: &MemoryInfo) -> Result<IntValue<'ctx>> {
         let builder = &self.builder;
 
+        // FIXME: What is this ugly code ???
         let base_r: Option<IntValue> = self
-            .load_reg_internal(&mem.base)
+            .load_register_value(&mem.base)
             .ok()
             .map(TryInto::try_into)
             .map(|v| v.unwrap());
@@ -85,7 +83,7 @@ impl<'ctx> LifterX86<'ctx> {
         };
 
         let mut idx_r: Option<IntValue> = self
-            .load_reg_internal(&mem.base)
+            .load_register_value(&mem.base)
             .ok()
             .map(TryInto::try_into)
             .map(|v| v.unwrap());
@@ -127,13 +125,13 @@ impl<'ctx> LifterX86<'ctx> {
         };
 
         let mut base_value = None;
-        if let Ok(base) = self.load_reg_internal(&mem.base) {
+        if let Ok(base) = self.load_register_value(&mem.base) {
             let base_into_int: IntValue<'ctx> = base.try_into()?;
             base_value = Some(builder.build_int_z_extend(base_into_int, i64_type, "")?);
         }
 
         let mut index_value = None;
-        if let Ok(index) = self.load_reg_internal(&mem.index) {
+        if let Ok(index) = self.load_register_value(&mem.index) {
             let index_2 = builder.build_int_z_extend(index.try_into()?, i64_type, "")?;
             if mem.scale > 1 {
                 let scale_value = i64_type.const_int(mem.scale.into(), false);

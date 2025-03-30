@@ -1,12 +1,12 @@
 use crate::lifter::semantics::Lifter;
 use crate::lifter::LifterX86;
-use crate::miscellaneous::ExtendedRegister;
+use crate::miscellaneous::ExtendedRegisterEnum;
 
 use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::FunctionValue;
 use inkwell::{context::Context, values::IntValue};
-use zydis::{FullInstruction, InstructionAttributes, InstructionCategory, MachineMode, Register};
+use zydis::{FullInstruction, InstructionAttributes, MachineMode, Register};
 
 pub mod contexts;
 
@@ -20,26 +20,26 @@ pub struct Compiler<'ctx> {
     func_value: FunctionValue<'ctx>,
 }
 
-pub(crate) const CPU_FLAGS: [ExtendedRegister; 18] = [
-    ExtendedRegister::CF,
-    ExtendedRegister::PF,
-    ExtendedRegister::AF,
-    ExtendedRegister::ZF,
-    ExtendedRegister::SF,
-    ExtendedRegister::TF,
-    ExtendedRegister::IF,
-    ExtendedRegister::DF,
-    ExtendedRegister::OF,
-    ExtendedRegister::IOPL,
-    ExtendedRegister::NT,
-    ExtendedRegister::RF,
-    ExtendedRegister::VM,
-    ExtendedRegister::AC,
-    ExtendedRegister::VIF,
-    ExtendedRegister::VIP,
-    ExtendedRegister::ID,
+pub(crate) const CPU_FLAGS: [ExtendedRegisterEnum; 18] = [
+    ExtendedRegisterEnum::CF,
+    ExtendedRegisterEnum::PF,
+    ExtendedRegisterEnum::AF,
+    ExtendedRegisterEnum::ZF,
+    ExtendedRegisterEnum::SF,
+    ExtendedRegisterEnum::TF,
+    ExtendedRegisterEnum::IF,
+    ExtendedRegisterEnum::DF,
+    ExtendedRegisterEnum::OF,
+    ExtendedRegisterEnum::IOPL,
+    ExtendedRegisterEnum::NT,
+    ExtendedRegisterEnum::RF,
+    ExtendedRegisterEnum::VM,
+    ExtendedRegisterEnum::AC,
+    ExtendedRegisterEnum::VIF,
+    ExtendedRegisterEnum::VIP,
+    ExtendedRegisterEnum::ID,
     // FIXME: Replace with flags
-    ExtendedRegister::RFLAGS,
+    ExtendedRegisterEnum::RFLAGS,
 ];
 
 pub(crate) const ALL_REGS_IN_MIN_SIZE: [Register; 17] = [
@@ -63,10 +63,14 @@ pub(crate) const ALL_REGS_IN_MIN_SIZE: [Register; 17] = [
 ];
 
 impl<'ctx> Compiler<'ctx> {
-    pub fn new_with_x86_lifter(context: &'ctx Context, mode: MachineMode) -> Result<Self> {
+    pub fn new_with_x86_lifter(
+        context: &'ctx Context,
+        mode: MachineMode,
+        runtime_address: u64,
+    ) -> Result<Self> {
         let module = context.create_module("protected");
         let func_value = create_func(&mode, context, &module);
-        let lifter = LifterX86::new(context, mode, func_value, module).unwrap();
+        let lifter = LifterX86::new(context, mode, func_value, module, runtime_address).unwrap();
 
         let compiler = Self {
             context,
@@ -97,12 +101,6 @@ impl<'ctx> Compiler<'ctx> {
         let mut last_ins_attr = zydis::InstructionAttributes::empty();
 
         for instruction in instructions {
-            #[cfg(debug_assertions)]
-            {
-                let formatted = formatter.format(None, instruction).unwrap();
-                println!("{formatted}")
-            }
-
             if [
                 //InstructionCategory::CALL,
                 //InstructionCategory::COND_BR,
@@ -179,7 +177,7 @@ impl<'ctx> Compiler<'ctx> {
 
         let rax = zydis::Register::AX.largest_enclosing(self.mode);
 
-        if let Ok(rax_val) = self.lifter.load_reg_internal(&rax) {
+        if let Ok(rax_val) = self.lifter.load_register_value(&rax) {
             let rax_as_int: IntValue<'ctx> = rax_val.try_into()?;
             if let Some(BasicTypeEnum::IntType(expected_retval_type)) =
                 self.func_value.get_type().get_return_type()
@@ -284,8 +282,10 @@ pub(crate) fn create_func<'ctx>(
     let regs_args: [BasicMetadataTypeEnum; ALL_REGS_IN_MIN_SIZE.len()] =
         core::array::from_fn(|_| int_type.into());
 
+    //let flags_args: [BasicMetadataTypeEnum; CPU_FLAGS.len()] =
+    //    core::array::from_fn(|_| context.i8_type().into());
     let flags_args: [BasicMetadataTypeEnum; CPU_FLAGS.len()] =
-        core::array::from_fn(|_| context.i8_type().into());
+        core::array::from_fn(|_| context.bool_type().into());
 
     let mut args = Vec::with_capacity(ARGS_COUNT);
     args.extend_from_slice(&regs_args);

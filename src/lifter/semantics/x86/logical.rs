@@ -1,5 +1,5 @@
 use super::{LifterX86, Result};
-use crate::miscellaneous::ExtendedRegister;
+use crate::miscellaneous::ExtendedRegisterEnum;
 
 use inkwell::{values::IntValue, IntPredicate};
 use zydis::{Instruction, Operands};
@@ -25,32 +25,38 @@ impl LifterX86<'_> {
         let zf = self.compute_zero_flag(value)?;
         let pf = self.compute_parity_flag(value)?;
 
-        self.store_cpu_flag(ExtendedRegister::SF, sf);
-        self.store_cpu_flag(ExtendedRegister::ZF, zf);
-        self.store_cpu_flag(ExtendedRegister::PF, pf);
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
 
-        self.store_cpu_flag_bool(ExtendedRegister::OF, false);
-        self.store_cpu_flag_bool(ExtendedRegister::CF, false);
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false);
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false);
 
         self.store_op(&ops[0], value)?;
         Ok(())
     }
 
     pub(super) fn lift_not<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let operand = &(instr.operands())[0];
-        let rval: IntValue<'_> = self.load_single_op(operand, operand.size)?.try_into()?;
+        let builder = &self.builder;
+        let ops = instr.operands();
 
-        self.builder.build_not(rval, "not_instruction")?;
+        let dest = &ops[0];
+
+        let mut r_value: IntValue<'_> = self.load_single_op(dest, dest.size)?.try_into()?;
+
+        r_value = builder.build_xor(r_value, r_value.get_type().const_all_ones(), "")?;
+
+        self.store_op(dest, r_value)?;
         Ok(())
     }
 
     pub(super) fn lift_or<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let operands = instr.operands();
+        let dest = &operands[0];
+        let src = &operands[1];
 
-        let operand_values = self.load_two_first_ops(operands)?;
-
-        let lhs: IntValue<'_> = operand_values[0].try_into()?;
-        let rhs: IntValue<'_> = operand_values[1].try_into()?;
+        let lhs = self.load_single_int_op(src, dest.size)?;
+        let rhs = self.load_single_int_op(dest, dest.size)?;
 
         let or = self.builder.build_or(lhs, rhs, "")?;
         let bool_ty = self.context.bool_type();
@@ -58,13 +64,13 @@ impl LifterX86<'_> {
         self.retdec_store_registers_plus_sflags(
             or,
             &[
-                (ExtendedRegister::AF, bool_ty.const_int(0, false)),
-                (ExtendedRegister::CF, bool_ty.const_int(0, false)),
-                (ExtendedRegister::OF, bool_ty.const_int(0, false)),
+                (ExtendedRegisterEnum::AF, bool_ty.const_int(0, false)),
+                (ExtendedRegisterEnum::CF, bool_ty.const_int(0, false)),
+                (ExtendedRegisterEnum::OF, bool_ty.const_int(0, false)),
             ],
         )?;
 
-        self.store_op(&operands[0], or)?;
+        self.store_op(dest, or)?;
         Ok(())
     }
 
@@ -85,12 +91,12 @@ impl LifterX86<'_> {
         let zf = builder.build_int_compare(IntPredicate::EQ, test_result, zero, "zf")?;
         let pf = self.compute_parity_flag(test_result)?;
 
-        self.store_cpu_flag(ExtendedRegister::SF, sf);
-        self.store_cpu_flag(ExtendedRegister::ZF, zf);
-        self.store_cpu_flag(ExtendedRegister::PF, pf);
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
 
-        self.store_cpu_flag_bool(ExtendedRegister::OF, false);
-        self.store_cpu_flag_bool(ExtendedRegister::CF, false);
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false);
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false);
 
         Ok(())
     }
@@ -110,9 +116,9 @@ impl LifterX86<'_> {
         self.retdec_store_registers_plus_sflags(
             result,
             &[
-                (ExtendedRegister::AF, bool_ty.const_zero()),
-                (ExtendedRegister::CF, bool_ty.const_zero()),
-                (ExtendedRegister::OF, bool_ty.const_zero()),
+                (ExtendedRegisterEnum::AF, bool_ty.const_zero()),
+                (ExtendedRegisterEnum::CF, bool_ty.const_zero()),
+                (ExtendedRegisterEnum::OF, bool_ty.const_zero()),
             ],
         )?;
 

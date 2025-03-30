@@ -1,7 +1,7 @@
 use inkwell::{builder::BuilderError, support::LLVMString};
 use thiserror::Error;
 
-use super::ExtendedRegister;
+use super::ExtendedRegisterEnum;
 
 pub(crate) type Result<T> = core::result::Result<T, Error>;
 
@@ -14,7 +14,7 @@ pub enum Error {
     #[error("Tried to convert zydis::Register::NONE to something")]
     RegisterConverError,
     #[error("Tried to unwrap a register which doesn't exist. {0:?}")]
-    RegUnwrapError(ExtendedRegister),
+    RegUnwrapError(ExtendedRegisterEnum),
     #[error(transparent)]
     RunPassesError(LLVMString),
     #[error("Can't find the following LLVM intrinsic: {0}")]

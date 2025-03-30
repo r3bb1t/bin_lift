@@ -1,16 +1,22 @@
-use std::borrow::Borrow;
+use super::{error::Error, error::Result, ExtendedRegisterEnum};
+use super::{LifterX86, PossibleLLVMValueEnum};
 
-use super::{error::Error, error::Result, ExtendedRegister};
+use std::borrow::Borrow;
 
 use inkwell::values::IntValue;
 use zydis::{
     ffi::{DecodedOperand, DecodedOperandKind, ImmediateInfo, MemoryInfo},
-    MachineMode, Register, RegisterClass,
+    Register, RegisterClass,
 };
 
-use super::{LifterX86, PossibleLLVMValueEnum};
-
 impl<'ctx> LifterX86<'ctx> {
+    pub(super) fn load_single_int_op(
+        &self,
+        operand: &DecodedOperand,
+        possible_size: u16,
+    ) -> Result<IntValue<'ctx>> {
+        self.load_single_op(operand, possible_size)?.try_into()
+    }
     // NOTE: Must be used only with instructions having exactly one operand if called from
     // semantics
     pub(super) fn load_single_op(
@@ -18,9 +24,17 @@ impl<'ctx> LifterX86<'ctx> {
         operand: &DecodedOperand,
         possible_size: u16,
     ) -> Result<PossibleLLVMValueEnum<'ctx>> {
+        let possible_size_in_llvm_ty = self.context.custom_width_int_type(possible_size.into());
         match operand.kind {
             DecodedOperandKind::Reg(register) => {
-                let reg_val = self.load_reg_internal(&register)?;
+                let reg_val = self.load_register_value(&register)?;
+                if let PossibleLLVMValueEnum::IntValue(value) = reg_val {
+                    if value.get_type().get_bit_width() < 128 {
+                        let zext_or_trunc_ed =
+                            self.create_z_ext_or_trunc(value, possible_size_in_llvm_ty)?;
+                        return Ok(zext_or_trunc_ed.into());
+                    }
+                }
                 Ok(reg_val)
             }
             DecodedOperandKind::Mem(ref memory_info) => {
@@ -62,38 +76,16 @@ impl<'ctx> LifterX86<'ctx> {
         Ok([first_op, second_op_zext])
     }
 
-    //pub(super) fn load_flag<T: Borrow<ExtendedRegister>>(
-    //    &self,
-    //    cpu_flag: T,
-    //) -> Result<IntValue<'ctx>> {
-    //    let cpu_flag = cpu_flag.borrow();
-    //    let regs_hashmap = self.regs_hashmap.get();
-    //    let v = unsafe {
-    //        (*regs_hashmap)
-    //            .get(cpu_flag)
-    //            .ok_or(Error::RegUnwrapError(*cpu_flag))?
-    //            .to_owned()
-    //            .try_into()?
-    //    };
-    //
-    //    Ok(v)
-    //}
-
-    pub(super) fn load_flag<T: Borrow<ExtendedRegister>>(
+    pub(super) fn load_flag<T: Borrow<ExtendedRegisterEnum>>(
         &self,
         cpu_flag: T,
     ) -> Result<IntValue<'ctx>> {
         let cpu_flag = cpu_flag.borrow();
-        //let pr = r.largest_enclosing(self.mode);
-        let regs_hashmap = self.regs_hashmap.get();
-        let lookup_result = unsafe {
-            (*regs_hashmap).get(cpu_flag).copied()
-            //.ok_or(Error::RegUnwrapError(pr))
-        };
+        let regs_hashmap = self.regs_hashmap();
+        let lookup_result = regs_hashmap.get(cpu_flag).copied();
 
         let reg_val = match lookup_result {
             Some(val) => val.try_into()?,
-            //None => self.get_max_int_type().get_undef(),
             None => self.get_max_int_type().const_zero(),
         };
 
@@ -153,95 +145,59 @@ impl<'ctx> LifterX86<'ctx> {
         }
     }
 
-    // FIXME: Taken from original lifter. Needs rework ig
-    pub(crate) fn load_reg_internal(
+    // New implementation (from Mergen)
+    pub(crate) fn load_register_value(
         &self,
         register: &Register,
     ) -> Result<PossibleLLVMValueEnum<'ctx>> {
-        let builder = &self.builder;
-
-        if register.class() == RegisterClass::FLAGS {
-            let flags_reg = self.get_rflags_value()?;
-            return Ok(flags_reg.into());
-        }
+        let register_class = register.class();
 
         if register == &Register::NONE {
-            return Err(Error::RegUnwrapError((*register).into()));
-        }
-        let rt = self.get_register_type(*register);
-
-        let pr = if [Register::RBP, Register::EBP, Register::BP].contains(register) {
-            match self.mode {
-                MachineMode::LONG_64 => Register::RBP,
-                MachineMode::LEGACY_32 => Register::EBP,
-                _ => unimplemented!("Only 32 and 64 bit supported right now"),
-            }
-        } else if [Register::RSP, Register::ESP, Register::SP].contains(register) {
-            match self.mode {
-                MachineMode::LONG_64 => Register::RSP,
-                MachineMode::LEGACY_32 => Register::ESP,
-                _ => unimplemented!("Only 32 and 64 bit supported right now"),
-            }
-        } else {
-            register.largest_enclosing(self.mode)
-        };
-
-        //let regs_hashmap = self.regs_hashmap.get();
-        //let reg = unsafe {
-        //    (*regs_hashmap)
-        //        .get(&pr.into())
-        //        .ok_or(Error::RegUnwrapError(pr.into()))?
-        //};
-        let reg = self.get_register(pr)?;
-
-        let reg = match reg {
-            PossibleLLVMValueEnum::IntValue(int_value) => int_value,
-            PossibleLLVMValueEnum::FloatValue(_) => unreachable!(),
-        };
-
-        let mut ret: PossibleLLVMValueEnum;
-
-        // Honestly, i think we will be ignoring IP in future
-        if register.class() == zydis::RegisterClass::IP {
-            ret = self.get_register(*register)?;
-            //ret = unsafe {
-            //    (*regs_hashmap)
-            //        .get(&(*register).into())
-            //        .copied()
-            //        .ok_or(Error::RegUnwrapError((*register).into()))?
-            //}
-        } else {
-            //ret = (*reg).into();
-            ret = reg.into();
-
-            if register != &pr {
-                if [Register::AH, Register::BH, Register::CH, Register::DH].contains(register) {
-                    if let PossibleLLVMValueEnum::IntValue(ret2) = ret {
-                        let ret3: PossibleLLVMValueEnum<'_> =
-                            ret2.const_shl(ret2.get_type().const_int(8, false)).into();
-
-                        ret = ret3;
-                    } else {
-                        panic!("message to myself: fix your retarded code!")
-                    }
-                }
-
-                ret = match ret {
-                    PossibleLLVMValueEnum::IntValue(int) => {
-                        let truncated = self.create_z_ext_or_trunc(int, rt.try_into()?)?;
-                        //let truncated = builder.build_int_truncate(int, rt.try_into()?, "")?;
-                        truncated.into()
-                    }
-                    PossibleLLVMValueEnum::FloatValue(float) => {
-                        // TODO: Check for possible bug
-                        let truncated = builder.build_float_trunc(float, rt.try_into()?, "")?;
-                        truncated.into()
-                    }
-                }
-            }
+            return Err(Error::RegUnwrapError(ExtendedRegisterEnum::NONE));
         }
 
-        Ok(ret)
+        if register_class == RegisterClass::IP {
+            // TODO: Just a random number tbh. Need to add runtime address
+            let ip = self
+                .get_max_int_type()
+                // NOTE: Ip tracking isn't implemented yet
+                .const_int(self.runtime_address.get(), false);
+            return Ok(ip.into());
+        } else if register_class == RegisterClass::FLAGS {
+            let rflags = self.get_rflags_value()?;
+            return Ok(rflags.into());
+        }
+
+        if [Register::AH, Register::CH, Register::DH, Register::BH].contains(register) {
+            let val = self.get_value_from_high_byte_register(register)?;
+            return Ok(val.into());
+        }
+
+        let new_key = self.get_register_largest_enclosing(register);
+        debug_assert!(new_key != Register::NONE);
+
+        self.get_register(new_key)
+    }
+
+    fn get_value_from_high_byte_register(&self, register: &Register) -> Result<IntValue<'ctx>> {
+        let builder = &self.builder;
+        let largest_register_enclosing = self.get_register_largest_enclosing(register);
+
+        let full_register_value: IntValue<'_> = self
+            .load_register_value(&largest_register_enclosing)?
+            .try_into()?;
+        let full_register_value_ty = full_register_value.get_type();
+
+        let shifted_value = builder.build_right_shift(
+            full_register_value,
+            full_register_value_ty.const_int(8, false),
+            false,
+            "",
+        )?;
+        let ff = full_register_value_ty.const_int(0xFF, false);
+        let high_byte_value = builder.build_and(shifted_value, ff, "")?;
+
+        Ok(high_byte_value)
     }
 
     fn load_imm_internal(&self, imm: &ImmediateInfo, possible_size: u16) -> IntValue<'ctx> {
