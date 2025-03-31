@@ -21,6 +21,8 @@ mod common;
 mod getters;
 mod setters;
 
+mod mergen_getters_and_setters;
+
 mod flagops;
 pub(crate) mod semantics;
 

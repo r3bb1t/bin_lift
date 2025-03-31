@@ -17,6 +17,40 @@ impl<'ctx> LifterX86<'ctx> {
     ) -> Result<IntValue<'ctx>> {
         self.load_single_op(operand, possible_size)?.try_into()
     }
+
+    //// NOTE: Must be used only with instructions having exactly one operand if called from
+    //// semantics
+    //pub(super) fn load_single_op(
+    //    &self,
+    //    operand: &DecodedOperand,
+    //    possible_size: u16,
+    //) -> Result<PossibleLLVMValueEnum<'ctx>> {
+    //    let possible_size_in_llvm_ty = self.context.custom_width_int_type(possible_size.into());
+    //    match operand.kind {
+    //        DecodedOperandKind::Reg(register) => {
+    //            let reg_val = self.load_register_value(&register)?;
+    //            if let PossibleLLVMValueEnum::IntValue(value) = reg_val {
+    //                if value.get_type().get_bit_width() < 128 {
+    //                    let zext_or_trunc_ed =
+    //                        self.create_z_ext_or_trunc(value, possible_size_in_llvm_ty)?;
+    //                    return Ok(zext_or_trunc_ed.into());
+    //                }
+    //            }
+    //            Ok(reg_val)
+    //        }
+    //        DecodedOperandKind::Mem(ref memory_info) => {
+    //            let mem_val = self.load_mem(memory_info, possible_size, false)?;
+    //            Ok(mem_val.into())
+    //        }
+    //        DecodedOperandKind::Imm(ref imm) => {
+    //            //let imm_val = self.experimental_load_imm_internal(imm, possible_size);
+    //            let imm_val = self.load_imm_internal(imm, possible_size);
+    //            Ok(imm_val.into())
+    //        }
+    //        DecodedOperandKind::Unused | DecodedOperandKind::Ptr(_) => unreachable!(),
+    //    }
+    //}
+
     // NOTE: Must be used only with instructions having exactly one operand if called from
     // semantics
     pub(super) fn load_single_op(
@@ -24,21 +58,14 @@ impl<'ctx> LifterX86<'ctx> {
         operand: &DecodedOperand,
         possible_size: u16,
     ) -> Result<PossibleLLVMValueEnum<'ctx>> {
-        let possible_size_in_llvm_ty = self.context.custom_width_int_type(possible_size.into());
+        //let possible_size_in_llvm_ty = self.context.custom_width_int_type(possible_size.into());
         match operand.kind {
             DecodedOperandKind::Reg(register) => {
-                let reg_val = self.load_register_value(&register)?;
-                if let PossibleLLVMValueEnum::IntValue(value) = reg_val {
-                    if value.get_type().get_bit_width() < 128 {
-                        let zext_or_trunc_ed =
-                            self.create_z_ext_or_trunc(value, possible_size_in_llvm_ty)?;
-                        return Ok(zext_or_trunc_ed.into());
-                    }
-                }
+                let reg_val = self.mergen_get_register(&register, possible_size.into())?;
                 Ok(reg_val)
             }
             DecodedOperandKind::Mem(ref memory_info) => {
-                let mem_val = self.load_mem(memory_info, possible_size, false)?;
+                let mem_val = self.mergen_load_mem(memory_info, possible_size.into())?;
                 Ok(mem_val.into())
             }
             DecodedOperandKind::Imm(ref imm) => {

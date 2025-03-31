@@ -1,9 +1,9 @@
 use super::{LifterX86, PossibleLLVMValueEnum, Result};
 use crate::miscellaneous::ExtendedRegisterEnum;
 
-use inkwell::values::{BasicValueEnum, IntValue};
+use inkwell::values::IntValue;
 use zydis::{
-    ffi::{DecodedOperand, DecodedOperandKind, MemoryInfo},
+    ffi::{DecodedOperand, DecodedOperandKind},
     Register, RegisterClass,
 };
 
@@ -17,39 +17,30 @@ impl<'ctx> LifterX86<'ctx> {
         match &op.kind {
             // NOTE: When adding float support, must revisit this first
             DecodedOperandKind::Reg(reg) => self.store_reg(*reg, val.try_into()?)?,
-            DecodedOperandKind::Mem(memory_info) => self.store_mem(memory_info, val)?,
+            DecodedOperandKind::Mem(memory_info) => self.mergen_store_mem(memory_info, val)?,
             _ => unreachable!("Tried to set value to operand with kind {:?}", op.kind),
         };
 
         Ok(())
     }
 
-    pub(super) fn store_mem(
-        &self,
-        mem: &MemoryInfo,
-        val: PossibleLLVMValueEnum<'ctx>,
-    ) -> Result<()> {
-        let builder = &self.builder;
-        let mem_addr = self.calc_mem_operand(mem)?;
-
-        //let mem_ptr = builder.build_int_to_ptr(
-        //    mem_addr,
-        //    self.context.ptr_type(AddressSpace::default()),
-        //    "",
-        //)?;
-
-        //let value: BasicValueEnum = val.into();
-        ////builder.build_store(mem_ptr, value)?;
-        //builder.build_store(self.stackmemory, value)?;
-
-        let i8_ty = self.context.i8_type();
-        let pointer =
-            unsafe { builder.build_gep(i8_ty, self.stackmemory, &[mem_addr], "GEPSTORE")? };
-
-        let val: BasicValueEnum = val.into();
-        builder.build_store(pointer, val)?;
-        Ok(())
-    }
+    //pub(super) fn store_mem(
+    //    &self,
+    //    mem: &MemoryInfo,
+    //    val: PossibleLLVMValueEnum<'ctx>,
+    //) -> Result<()> {
+    //    let builder = &self.builder;
+    //    let mem_addr = self.calc_mem_operand(mem)?;
+    //
+    //
+    //    let i8_ty = self.context.i8_type();
+    //    let pointer =
+    //        unsafe { builder.build_gep(i8_ty, self.stackmemory, &[mem_addr], "GEPSTORE")? };
+    //
+    //    let val: BasicValueEnum = val.into();
+    //    builder.build_store(pointer, val)?;
+    //    Ok(())
+    //}
 
     pub(super) fn store_reg(&self, reg: Register, mut val: IntValue<'ctx>) -> Result<()> {
         const GPR_8_BIT: [Register; 20] = [

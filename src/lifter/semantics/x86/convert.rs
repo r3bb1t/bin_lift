@@ -6,7 +6,6 @@ use inkwell::{values::IntValue, IntPredicate};
 use zydis::Register;
 
 impl LifterX86<'_> {
-    // NOTE: checked
     pub(super) fn lift_cbw(&self) -> Result<()> {
         let al: IntValue<'_> = self.load_register_value(&Register::AL)?.try_into()?;
         let al_8_bit = self.create_z_ext_or_trunc(al, self.context.i8_type())?;
@@ -22,11 +21,12 @@ impl LifterX86<'_> {
 
     pub(super) fn lift_cdq(&self) -> Result<()> {
         let builder = &self.builder;
+        let i32_ty = self.context.i32_type();
 
         let eax: IntValue<'_> = self.load_register_value(&Register::EAX)?.try_into()?;
-        let sign_bit = self.compute_sign_flag(eax)?;
+        let eax_z_ext_or_trunc = self.create_z_ext_or_trunc(eax, i32_ty)?;
 
-        let i32_ty = self.context.i32_type();
+        let sign_bit = self.compute_sign_flag(eax_z_ext_or_trunc)?;
 
         let edx = builder
             .build_select(
@@ -37,8 +37,7 @@ impl LifterX86<'_> {
                     "",
                 )?,
                 i32_ty.const_zero(),
-                // hopefully wont be a bug
-                i32_ty.const_all_ones(),
+                i32_ty.const_int(0xFFFFFFFF, false),
                 "cdq_edx_",
             )?
             .into_int_value();
@@ -50,10 +49,11 @@ impl LifterX86<'_> {
 
     pub(super) fn lift_cdqe(&self) -> Result<()> {
         let eax: IntValue<'_> = self.load_register_value(&Register::EAX)?.try_into()?;
+        let eax_z_ext_or_trunc = self.create_z_ext_or_trunc(eax, self.context.i32_type())?;
 
-        let rax = self
-            .builder
-            .build_int_z_extend(eax, self.context.i64_type(), "cdqe")?;
+        let rax =
+            self.builder
+                .build_int_s_extend(eax_z_ext_or_trunc, self.context.i64_type(), "cdqe")?;
 
         self.store_reg(Register::RAX, rax)?;
         Ok(())
@@ -61,13 +61,13 @@ impl LifterX86<'_> {
 
     pub(super) fn lift_cqo(&self) -> Result<()> {
         let builder = &self.builder;
-
-        let eax: IntValue<'_> = self.load_register_value(&Register::RAX)?.try_into()?;
-        let sign_bit = self.compute_sign_flag(eax)?;
-
         let i64_ty = self.context.i64_type();
 
-        let edx = builder
+        let rax: IntValue<'_> = self.load_register_value(&Register::RAX)?.try_into()?;
+        let rax_z_ext_or_trunc = self.create_z_ext_or_trunc(rax, i64_ty)?;
+        let sign_bit = self.compute_sign_flag(rax_z_ext_or_trunc)?;
+
+        let rdx = builder
             .build_select(
                 builder.build_int_compare(
                     IntPredicate::EQ,
@@ -77,17 +77,16 @@ impl LifterX86<'_> {
                 )?,
                 i64_ty.const_zero(),
                 // hopefully wont be a bug
-                i64_ty.const_all_ones(),
+                i64_ty.const_int(0xFFFFFFFFFFFFFFFF, false),
                 "cqo",
             )?
             .into_int_value();
 
-        self.store_reg(Register::RDX, edx)?;
+        self.store_reg(Register::RDX, rdx)?;
 
         Ok(())
     }
 
-    // NOTE: checked
     pub(super) fn lift_cwd(&self) -> Result<()> {
         let builder = &self.builder;
         let i_16_ty = self.context.i16_type();
@@ -120,12 +119,13 @@ impl LifterX86<'_> {
 
     pub(super) fn lift_cwde(&self) -> Result<()> {
         let ax: IntValue<'_> = self.load_register_value(&Register::RAX)?.try_into()?;
+        let ax = self.create_z_ext_or_trunc(ax, self.context.i16_type())?;
 
-        let dst_ty = self.get_max_int_type();
+        //let dst_ty = self.get_max_int_type();
         let val = self
             .builder
-            //.build_int_s_extend(ax, self.context.i32_type(), "cwde")?;
-            .build_int_s_extend(ax, dst_ty, "cwde")?;
+            .build_int_s_extend(ax, self.context.i32_type(), "cwde")?;
+        //.build_int_s_extend(ax, dst_ty, "cwde")?;
 
         self.store_reg(Register::RAX, val)?;
         Ok(())

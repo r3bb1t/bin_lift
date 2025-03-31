@@ -36,6 +36,7 @@ impl LifterX86<'_> {
         Ok(())
     }
 
+    // NOTE: checked
     pub(super) fn lift_not<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let builder = &self.builder;
         let ops = instr.operands();
@@ -50,19 +51,26 @@ impl LifterX86<'_> {
         Ok(())
     }
 
+    // NOTE: checked
     pub(super) fn lift_or<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let operands = instr.operands();
         let dest = &operands[0];
         let src = &operands[1];
 
-        let lhs = self.load_single_int_op(src, dest.size)?;
-        let rhs = self.load_single_int_op(dest, dest.size)?;
+        let rhs = self.load_single_int_op(src, dest.size)?;
+        let lhs = self.load_single_int_op(dest, dest.size)?;
 
-        let or = self.builder.build_or(lhs, rhs, "")?;
+        let result = self.builder.build_or(lhs, rhs, "")?;
         let bool_ty = self.context.bool_type();
 
+        let sf = self.compute_sign_flag(result)?;
+        let zf = self.compute_zero_flag(result)?;
+
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
+
         self.retdec_store_registers_plus_sflags(
-            or,
+            result,
             &[
                 (ExtendedRegisterEnum::AF, bool_ty.const_int(0, false)),
                 (ExtendedRegisterEnum::CF, bool_ty.const_int(0, false)),
@@ -70,7 +78,7 @@ impl LifterX86<'_> {
             ],
         )?;
 
-        self.store_op(dest, or)?;
+        self.store_op(dest, result)?;
         Ok(())
     }
 

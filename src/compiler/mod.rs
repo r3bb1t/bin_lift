@@ -88,9 +88,6 @@ impl<'ctx> Compiler<'ctx> {
         //) -> Result<&FunctionValue> {
     ) -> Result<()> {
         #[cfg(debug_assertions)]
-        let formatter = zydis::Formatter::intel();
-
-        #[cfg(debug_assertions)]
         let mut problems_hs = std::collections::HashSet::new();
 
         #[cfg(debug_assertions)]

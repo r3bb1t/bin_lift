@@ -7,6 +7,7 @@ mod binary;
 mod bitbyte;
 mod call;
 mod cmov;
+mod cond_br;
 mod convert;
 mod dataxfer;
 mod flagop;
@@ -21,6 +22,7 @@ mod setcc;
 mod shift;
 mod stringop;
 mod system;
+mod uncond_br;
 
 impl Lifter for LifterX86<'_> {
     fn lift_instr(&self, instr: &FullInstruction) -> Result<()> {
@@ -96,6 +98,7 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::CMOVZ => self.lift_cmovz(instr),
 
             // convert
+            // NOTE: checked
             Mnemonic::CBW => self.lift_cbw(),
             Mnemonic::CDQ => self.lift_cdq(),
             Mnemonic::CDQE => self.lift_cdqe(),
@@ -188,6 +191,9 @@ impl Lifter for LifterX86<'_> {
 
             // System
             Mnemonic::RDTSC => self.lift_rdtsc(),
+
+            // UNCOND_BR
+            Mnemonic::JMP => self.lift_jmp(instr),
 
             // TODO: Add  flagops
             //_ => unimplemented!("{} isn't implemented yet", instruction.mnemonic),
