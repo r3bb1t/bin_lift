@@ -26,8 +26,8 @@ impl LifterX86<'_> {
         )?;
         let eax_part = self.create_z_ext_or_trunc(rdtsc_retval, self.context.i32_type())?;
 
-        self.store_reg(ExtendedRegisterEnum::EDX.into(), edx_part.into())?;
-        self.store_reg(ExtendedRegisterEnum::EAX.into(), eax_part.into())?;
+        self.store_reg(ExtendedRegisterEnum::EDX.into(), edx_part)?;
+        self.store_reg(ExtendedRegisterEnum::EAX.into(), eax_part)?;
 
         Ok(())
     }

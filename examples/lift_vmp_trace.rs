@@ -23,8 +23,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let context = Context::create();
 
     let decoder = Decoder::new64();
-    // 17 883 instructions
-    let raw_bytes = std::include_bytes!("files/raw_instr_trace.bin");
+    //// 17 883 instructions
+    //let raw_bytes = std::include_bytes!("files/raw_instr_trace.bin");
+    let raw_bytes = std::include_bytes!("files/newest_trace.bin");
     //let raw_bytes = std::include_bytes!("another_trace_35.bin");
     // This one is the wrong trace, but
 

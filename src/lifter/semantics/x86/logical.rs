@@ -7,11 +7,13 @@ use zydis::{Instruction, Operands};
 impl LifterX86<'_> {
     pub(super) fn lift_and_andn<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let builder = &self.builder;
-        let ops = instr.operands();
-        let [lhs, rhs] = self.load_two_first_ops(ops)?;
 
-        let lhs_int: IntValue<'_> = lhs.try_into()?;
-        let rhs_int: IntValue<'_> = rhs.try_into()?;
+        let operands = instr.operands();
+        let dest = &operands[0];
+        let src = &operands[1];
+
+        let lhs_int = self.load_single_int_op(dest, dest.size)?;
+        let rhs_int = self.load_single_int_op(src, dest.size)?;
 
         let lhs_final = match instr.mnemonic {
             zydis::Mnemonic::AND => lhs_int,
@@ -32,7 +34,7 @@ impl LifterX86<'_> {
         self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false);
         self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false);
 
-        self.store_op(&ops[0], value)?;
+        self.store_op(dest, value)?;
         Ok(())
     }
 
@@ -82,14 +84,17 @@ impl LifterX86<'_> {
         Ok(())
     }
 
+    // NOTE: checked
     pub(super) fn lift_test<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
         let builder = &self.builder;
 
         let ops = instr.operands();
-        let [lhs, rhs] = self.load_two_first_ops(ops)?;
-        // What if test will recieve float ?
-        let lhs_int: IntValue<'_> = lhs.try_into()?;
-        let rhs_int: IntValue<'_> = rhs.try_into()?;
+
+        let dest = &ops[0];
+        let src = &ops[1];
+
+        let lhs_int = self.load_single_int_op(dest, dest.size)?;
+        let rhs_int = self.load_single_int_op(src, dest.size)?;
 
         let test_result = builder.build_and(lhs_int, rhs_int, "test_and")?;
 
@@ -109,28 +114,30 @@ impl LifterX86<'_> {
         Ok(())
     }
 
+    // NOTE: checked
     pub(super) fn lift_xor<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let operands = instr.operands();
+        let ops = instr.operands();
 
-        let operand_values = self.load_two_first_ops(operands)?;
+        let dest = &ops[0];
+        let src = &ops[1];
 
-        let lhs: IntValue<'_> = operand_values[0].try_into()?;
-        let rhs: IntValue<'_> = operand_values[1].try_into()?;
+        let lhs_int = self.load_single_int_op(dest, dest.size)?;
+        let rhs_int = self.load_single_int_op(src, dest.size)?;
 
-        let result = self.builder.build_xor(lhs, rhs, "xor_")?;
+        let result = self.builder.build_xor(lhs_int, rhs_int, "xor_")?;
 
-        let bool_ty = self.context.bool_type();
+        let sf = self.compute_sign_flag(result)?;
+        let zf = self.compute_zero_flag(result)?;
+        let pf = self.compute_parity_flag(result)?;
 
-        self.retdec_store_registers_plus_sflags(
-            result,
-            &[
-                (ExtendedRegisterEnum::AF, bool_ty.const_zero()),
-                (ExtendedRegisterEnum::CF, bool_ty.const_zero()),
-                (ExtendedRegisterEnum::OF, bool_ty.const_zero()),
-            ],
-        )?;
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
 
-        self.store_op(&operands[0], result)?;
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false);
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false);
+
+        self.store_op(dest, result)?;
         Ok(())
     }
 }

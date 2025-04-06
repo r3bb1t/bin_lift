@@ -58,14 +58,15 @@ impl Lifter for LifterX86<'_> {
 
         match instr.mnemonic {
             // binary
+            // NOTE: checked
             Mnemonic::ADC => self.lift_adc(instr),
-            Mnemonic::ADD | Mnemonic::XADD => self.lift_add(instr),
+            Mnemonic::ADD | Mnemonic::SUB => self.lift_add_sub(instr),
             Mnemonic::CMP => self.lift_cmp(instr),
             Mnemonic::DEC => self.lift_dec(instr),
             Mnemonic::INC => self.lift_inc(instr),
             Mnemonic::NEG => self.lift_neg(instr),
             Mnemonic::SBB => self.lift_sbb(instr),
-            Mnemonic::SUB => self.lift_sub(instr),
+            //Mnemonic::SUB => self.lift_sub(instr),
 
             // bitbyte
             // NOTE: checked
@@ -80,6 +81,7 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::CALL => self.lift_call(instr),
 
             // cmov
+            // NOTE: checked
             Mnemonic::CMOVB => self.lift_cmovb(instr),
             Mnemonic::CMOVBE => self.lift_cmovbe(instr),
             Mnemonic::CMOVL => self.lift_cmovl(instr),
@@ -115,6 +117,7 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::XCHG => self.lift_xchg(instr),
 
             // logical
+            // NOTE: checked
             Mnemonic::AND | Mnemonic::ANDN => self.lift_and_andn(instr),
             Mnemonic::NOT => self.lift_not(instr),
             Mnemonic::OR => self.lift_or(instr),
@@ -139,14 +142,17 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::NOP => self.lift_nop(),
 
             // pop
+            // NOTE: checked
             Mnemonic::POP => self.lift_pop(instr),
             Mnemonic::POPFQ => self.lift_popfq(instr),
 
             // push
+            // NOTE: checked
             Mnemonic::PUSH => self.lift_push(instr),
             Mnemonic::PUSHFQ => self.lift_pushfq(instr),
 
             // ret
+            // NOTE: NOT FULLY checked (didn't do the solving of path)
             Mnemonic::RET => self.lift_ret(instr),
 
             // rotate

@@ -62,8 +62,8 @@ impl<'ctx> LifterX86<'ctx> {
         let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
         let of = self.load_flag(ExtendedRegisterEnum::OF)?;
 
-        let sf_neg_of = builder.build_int_compare(IntPredicate::NE, sf, of, "sf_neg_of_cmovle")?;
-        let condition = builder.build_or(zf, sf_neg_of, "cmovnle_condition")?;
+        let sf_neq_of = builder.build_int_compare(IntPredicate::NE, sf, of, "sf_neg_of_cmovle")?;
+        let condition = builder.build_or(zf, sf_neq_of, "cmovnle_condition")?;
 
         self.cmov_helper(ops, condition, "cmovle_compare")?;
         Ok(())
@@ -76,7 +76,7 @@ impl<'ctx> LifterX86<'ctx> {
         let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
         let not_cf = builder.build_not(cf, "cmovnb_not_cf")?;
 
-        self.cmov_helper(ops, not_cf, "cmovnb_compare")?;
+        self.cmov_helper(ops, builder.build_not(not_cf, "")?, "cmovnb_compare")?;
         Ok(())
     }
 
@@ -129,13 +129,10 @@ impl<'ctx> LifterX86<'ctx> {
     }
 
     pub(super) fn lift_cmovno<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
         let ops = instr.operands();
-
         let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-        let not_of = builder.build_not(of, "not_of_")?;
 
-        self.cmov_helper(ops, not_of, "cmovno_compare")?;
+        self.cmov_helper(ops, of, "cmovno_compare")?;
         Ok(())
     }
 
@@ -174,7 +171,7 @@ impl<'ctx> LifterX86<'ctx> {
         let condition = builder.build_int_compare(
             IntPredicate::EQ,
             zf,
-            zf.get_type().const_int(1, false),
+            zf.get_type().const_zero(),
             "cmovnz_condition",
         )?;
 
@@ -225,16 +222,18 @@ impl<'ctx> LifterX86<'ctx> {
         condition: IntValue<'ctx>,
         select_text: &'static str,
     ) -> Result<()> {
-        let loaded_ops = self.load_two_first_ops(ops)?;
-        let lhs: IntValue<'_> = loaded_ops[0].try_into()?;
-        let rhs: IntValue<'_> = loaded_ops[1].try_into()?;
+        let dest = &ops[0];
+        let src = &ops[1];
+
+        let lhs = self.load_single_int_op(dest, dest.size)?;
+        let rhs = self.load_single_int_op(src, dest.size)?;
 
         let result = self
             .builder
             .build_select(condition, rhs, lhs, select_text)?
             .into_int_value();
 
-        self.store_op(&ops[0], result)?;
+        self.store_op(dest, result)?;
         Ok(())
     }
 }

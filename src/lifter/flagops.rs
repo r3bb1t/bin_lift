@@ -39,6 +39,7 @@ impl<'ctx> LifterX86<'ctx> {
         Ok(zf)
     }
     // TODO: Review it and check if i need it to
+    // FIXME: Steal from Mergen
     pub(super) fn compute_parity_flag(&self, value: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
         // Steal from retdec instead of naci code for now
         let builder = &self.builder;
