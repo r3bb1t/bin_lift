@@ -1,6 +1,6 @@
 use super::{LifterX86, Result};
 
-use inkwell::{builder, types::PointerType, values::IntValue, AddressSpace};
+use inkwell::{values::IntValue, AddressSpace};
 use zydis::{ffi::DecodedOperandKind, Instruction, Operands, Register};
 
 impl LifterX86<'_> {
@@ -18,7 +18,7 @@ impl LifterX86<'_> {
         let val = self
             .context
             .i64_type()
-            .const_int((self.retdec_get_arch_byte_size() / 8).into(), true);
+            .const_int(self.retdec_get_arch_byte_size().into(), true);
 
         let result = self
             .builder

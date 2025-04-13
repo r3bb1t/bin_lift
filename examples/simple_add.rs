@@ -1,7 +1,12 @@
-use inkwell::context::Context;
+use inkwell::{
+    context::Context,
+    passes::{PassBuilderOptions, PassManager},
+    targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine},
+    OptimizationLevel,
+};
 use std::{error::Error, time::Instant};
 use zydis::Decoder;
-use zydis2llvmir::lifter::LifterX86;
+use zydis2llvmir::{compiler::Compiler, lifter::LifterX86};
 
 /// This is an example of lifting some simple function to LLVM IR
 /// It simply lifts the following code
@@ -34,20 +39,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         all_instructions.push(instruction);
     }
 
-    let lifter = LifterX86::new(&context, mode);
-    lifter.lift_basic_block(&all_instructions)?;
+    let compiler = Compiler::new_with_x86_lifter(&context, mode, None)?;
+    compiler.lift_function(&all_instructions, true)?;
 
-    // // Append ret void at the end of the basic block
-    // lifter.builder.build_return(None)?;
+    compiler.lifter.module.print_to_stderr();
 
     println!("Elapsed: {:?}", start_time.elapsed());
-
-    lifter.module.print_to_stderr();
-
-    lifter
-        .module
-        .print_to_file("a.ll")
-        .expect("unable to print to file");
 
     Ok(())
 }

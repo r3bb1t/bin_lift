@@ -1,8 +1,6 @@
-use super::{definintions::PossibleLLVMValueEnum, Error, ExtendedRegisterEnum, LifterX86, Result};
+use super::{Error, ExtendedRegisterEnum, LifterX86, Result};
 
-use inkwell::{intrinsics::Intrinsic, values::IntValue, IntPredicate};
-
-const CTPOP_INSTRINSIC: &str = "llvm.ctpop";
+use inkwell::{values::IntValue, IntPredicate};
 
 impl<'ctx> LifterX86<'ctx> {
     pub(super) fn compute_aux_flag(
@@ -19,6 +17,7 @@ impl<'ctx> LifterX86<'ctx> {
         let af = builder.build_int_compare(IntPredicate::EQ, aux_2, aux_1, "computed_af_")?;
         Ok(af)
     }
+
     pub(super) fn compute_sign_flag(&self, value: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
         let sf = self.builder.build_int_compare(
             IntPredicate::SLT,
@@ -38,97 +37,39 @@ impl<'ctx> LifterX86<'ctx> {
         )?;
         Ok(zf)
     }
-    // TODO: Review it and check if i need it to
-    // FIXME: Steal from Mergen
+
     pub(super) fn compute_parity_flag(&self, value: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
-        // Steal from retdec instead of naci code for now
         let builder = &self.builder;
-        let i8t = self.context.i8_type();
-        let trunc = self.builder.build_int_truncate(value, i8t, "")?;
-        let f =
-            Intrinsic::find(CTPOP_INSTRINSIC).ok_or(Error::IntrinsicNotFound(CTPOP_INSTRINSIC))?;
 
-        let f_func = f.get_declaration(&self.module, &[i8t.into()]).unwrap();
-        let c = builder.build_call(f_func, &[trunc.into()], "")?;
+        let lsb = builder.build_int_z_extend(
+            builder.build_and(value, value.get_type().const_int(0xff, false), "")?,
+            self.context.i64_type(),
+            "",
+        )?;
 
-        let c_retval = c.try_as_basic_value().left().unwrap().into_int_value();
+        let lsb_ty = lsb.get_type();
 
-        let a = builder
-            // TODO: Check if "false" really fits
-            .build_and(c_retval, c_retval.get_type().const_int(1, false), "")?;
+        let mut parity = builder.build_and(
+            builder.build_int_unsigned_rem(
+                builder.build_and(
+                    builder.build_int_mul(
+                        lsb,
+                        lsb_ty.const_int(0x0101010101010101, false),
+                        "pf1",
+                    )?,
+                    lsb_ty.const_int(0x8040201008040201, false),
+                    "pf2",
+                )?,
+                lsb_ty.const_int(0x1ff, false),
+                "pf3",
+            )?,
+            lsb_ty.const_int(1, false),
+            "pf3",
+        )?;
 
-        // TODO: Check if false fits here as well
-        let pf =
-            builder.build_int_compare(IntPredicate::EQ, a, a.get_type().const_int(0, false), "")?;
-        Ok(pf)
-    }
+        parity = builder.build_int_compare(IntPredicate::EQ, lsb_ty.const_zero(), parity, "pf5")?;
 
-    // Region: flags
-    pub(super) fn retdec_store_registers_plus_sflags<T>(
-        &self,
-        sflags_val: T,
-        regs: &[(ExtendedRegisterEnum, IntValue<'ctx>)],
-    ) -> Result<()>
-    where
-        PossibleLLVMValueEnum<'ctx>: From<T>,
-    {
-        let sflags_val = PossibleLLVMValueEnum::from(sflags_val);
-        for (reg, val) in regs {
-            let val = *val;
-            self.store_cpu_flag(*reg, val);
-        }
-
-        let sflags_val_as_int: IntValue<'_> = sflags_val.try_into()?;
-        self.store_cpu_flag(
-            ExtendedRegisterEnum::ZF,
-            self.generate_zero_flag(sflags_val_as_int)?,
-        );
-        self.store_cpu_flag(
-            ExtendedRegisterEnum::SF,
-            self.generate_sign_flag(sflags_val_as_int)?,
-        );
-        self.store_cpu_flag(
-            ExtendedRegisterEnum::PF,
-            self.generate_parity_flag(sflags_val_as_int)?,
-        );
-        Ok(())
-    }
-
-    fn generate_zero_flag(&self, val: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
-        let zero = val.get_type().const_int(0, false);
-        let r = self
-            .builder
-            .build_int_compare(IntPredicate::EQ, val, zero, "")?;
-        Ok(r)
-    }
-
-    fn generate_sign_flag(&self, val: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
-        let zero = val.get_type().const_int(0, false);
-        let r = self
-            .builder
-            .build_int_compare(IntPredicate::SLT, val, zero, "")?;
-        Ok(r)
-    }
-
-    fn generate_parity_flag(&self, val: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
-        let builder = &self.builder;
-        let i8t = self.context.i8_type();
-        let trunc = self.builder.build_int_truncate(val, i8t, "")?;
-        let f = Intrinsic::find("llvm.ctpop").ok_or(Error::IntrinsicNotFound(CTPOP_INSTRINSIC))?;
-
-        let f_func = f.get_declaration(&self.module, &[i8t.into()]).unwrap();
-        let c = builder.build_call(f_func, &[trunc.into()], "")?;
-
-        let c_retval = c.try_as_basic_value().left().unwrap().into_int_value();
-
-        let a = builder
-            // TODO: Check if "false" really fits
-            .build_and(c_retval, c_retval.get_type().const_int(1, false), "")?;
-
-        // TODO: Check if false fits here as well
-        let r =
-            builder.build_int_compare(IntPredicate::EQ, a, a.get_type().const_int(0, false), "")?;
-        Ok(r)
+        Ok(parity)
     }
 
     pub(super) fn set_rflags_value(&self, value: IntValue<'ctx>) -> Result<()> {

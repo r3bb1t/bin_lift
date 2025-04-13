@@ -436,5 +436,4 @@ impl<'ctx> LifterX86<'ctx> {
 
         Ok(ret)
     }
-    // endregion:   Stolen from retdec
 }

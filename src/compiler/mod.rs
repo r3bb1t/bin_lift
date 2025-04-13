@@ -2,9 +2,13 @@ use crate::lifter::semantics::Lifter;
 use crate::lifter::LifterX86;
 use crate::miscellaneous::ExtendedRegisterEnum;
 
+use error::Error;
 use inkwell::module::Module;
+use inkwell::passes::PassBuilderOptions;
+use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::FunctionValue;
+use inkwell::OptimizationLevel;
 use inkwell::{context::Context, values::IntValue};
 use zydis::{FullInstruction, InstructionAttributes, MachineMode, Register};
 
@@ -66,7 +70,7 @@ impl<'ctx> Compiler<'ctx> {
     pub fn new_with_x86_lifter(
         context: &'ctx Context,
         mode: MachineMode,
-        runtime_address: u64,
+        runtime_address: Option<u64>,
     ) -> Result<Self> {
         let module = context.create_module("protected");
         let func_value = create_func(&mode, context, &module);
@@ -84,8 +88,7 @@ impl<'ctx> Compiler<'ctx> {
     pub fn lift_function(
         &self,
         instructions: &Vec<FullInstruction>,
-        //) -> Result<&FunctionValue> {
-        //) -> Result<&FunctionValue> {
+        optimize_results: bool,
     ) -> Result<()> {
         #[cfg(debug_assertions)]
         let mut problems_hs = std::collections::HashSet::new();
@@ -95,72 +98,28 @@ impl<'ctx> Compiler<'ctx> {
         #[cfg(debug_assertions)]
         let mut lifted_instructions_count = 0;
 
-        let mut last_ins_attr = zydis::InstructionAttributes::empty();
-
         for instruction in instructions {
-            if [
-                //InstructionCategory::CALL,
-                //InstructionCategory::COND_BR,
-                //InstructionCategory::UNCOND_BR,
-                //InstructionCategory::RET,
-            ]
-            .contains(&instruction.meta.category)
-            {
-                #[cfg(debug_assertions)]
-                eprintln!("Skipping {}", instruction.mnemonic);
-            } else {
-                //if self.lifter.lift_instr(instruction.clone()).is_err() {
-                //    #[cfg(debug_assertions)]
-                //    problems_hs.insert((instruction.mnemonic, instruction.meta.category));
-                //    missed_instructions_count += 1;
-                //}
-                if instruction
-                    .attributes
-                    .contains(InstructionAttributes::HAS_REP)
-                    && last_ins_attr.contains(InstructionAttributes::HAS_REP)
-                {
-                    last_ins_attr = instruction.attributes;
-                    continue;
-                }
-                match self.lifter.lift_instr(instruction) {
-                    Ok(_) => {
-                        #[cfg(debug_assertions)]
-                        {
-                            lifted_instructions_count += 1;
-                        }
+            match self.lifter.lift_instr(instruction) {
+                Ok(_) => {
+                    #[cfg(debug_assertions)]
+                    {
+                        lifted_instructions_count += 1;
                     }
-                    Err(e) => {
-                        #[cfg(debug_assertions)]
-                        {
-                            match e {
-                                crate::lifter::Error::UnsupportedInstr(_) => {
-                                    problems_hs
-                                        .insert((instruction.mnemonic, instruction.meta.category));
-                                    missed_instructions_count += 1;
-                                }
-                                _ => panic!("{e}"),
+                }
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    {
+                        match e {
+                            crate::lifter::Error::UnsupportedInstr(_) => {
+                                problems_hs
+                                    .insert((instruction.mnemonic, instruction.meta.category));
+                                missed_instructions_count += 1;
                             }
+                            _ => panic!("{e}"),
                         }
                     }
-                }
-                last_ins_attr = instruction.attributes;
+                } //last_ins_attr = instruction.attributes;
             }
-
-            //match self.lifter.lift_instr(instruction) {
-            //    Ok(_) => {
-            //        #[cfg(debug_assertions)]
-            //        {
-            //            lifted_instructions_count += 1;
-            //        }
-            //    }
-            //    Err(_) => {
-            //        #[cfg(debug_assertions)]
-            //        {
-            //            problems_hs.insert((instruction.mnemonic, instruction.meta.category));
-            //            missed_instructions_count += 1;
-            //        }
-            //    }
-            //}
         }
 
         #[cfg(debug_assertions)]
@@ -182,12 +141,52 @@ impl<'ctx> Compiler<'ctx> {
                 let rax_with_correct_size = self
                     .lifter
                     .create_z_ext_or_trunc(rax_as_int, expected_retval_type)?;
+
+                #[cfg(debug_assertions)]
+                println!("Rax result: {rax_with_correct_size:#?}");
+
                 self.lifter
                     .builder
                     .build_return(Some(&rax_with_correct_size))?;
             } else {
                 self.lifter.builder.build_return(Some(&rax_as_int))?;
             }
+        }
+
+        if optimize_results {
+            let pass_options = PassBuilderOptions::create();
+            //pass_options.set_verify_each(true);
+            //pass_options.set_debug_logging(true);
+            pass_options.set_loop_interleaving(true);
+            pass_options.set_loop_vectorization(true);
+            pass_options.set_loop_slp_vectorization(true);
+            pass_options.set_loop_unrolling(true);
+            pass_options.set_forget_all_scev_in_loop_unroll(true);
+            pass_options.set_licm_mssa_opt_cap(1);
+            pass_options.set_licm_mssa_no_acc_for_promotion_cap(10);
+            pass_options.set_call_graph_profile(true);
+            pass_options.set_merge_functions(true);
+
+            let initialization_config = &InitializationConfig::default();
+            Target::initialize_all(initialization_config);
+
+            let triple = TargetMachine::get_default_triple();
+            let target = Target::from_triple(&triple).unwrap();
+            let machine = target
+                .create_target_machine(
+                    &triple,
+                    //TODO : Add cpu features as optionals
+                    "generic", //TargetMachine::get_host_cpu_name().to_string().as_str(),
+                    "",        //TargetMachine::get_host_cpu_features().to_string().as_str(),
+                    OptimizationLevel::Aggressive,
+                    RelocMode::Default,
+                    CodeModel::Default,
+                )
+                .ok_or(Error::UnableToCreateTargetMachine)?;
+            self.lifter
+                .module
+                .run_passes("default<O2>", &machine, pass_options)
+                .map_err(Error::OptimizationsError)?;
         }
 
         //Ok(&self.func_value)

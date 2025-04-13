@@ -38,7 +38,7 @@ pub struct LifterX86<'ctx> {
     //    RefCell<HashMap<ExtendedRegister, PossibleLLVMValueEnum<'ctx>>>,
     pub(super) regs_hashmap: UnsafeCell<HashMap<ExtendedRegisterEnum, PossibleLLVMValueEnum<'ctx>>>,
     pub stackmemory: PointerValue<'ctx>,
-    pub runtime_address: Cell<u64>,
+    pub runtime_address: Option<Cell<u64>>,
 }
 
 impl<'ctx> LifterX86<'ctx> {
@@ -47,7 +47,7 @@ impl<'ctx> LifterX86<'ctx> {
         mode: MachineMode,
         func_value: FunctionValue<'ctx>,
         module: Module<'ctx>,
-        runtime_address: u64,
+        runtime_address: Option<u64>,
     ) -> Result<Self> {
         let builder = context.create_builder();
 
@@ -76,65 +76,27 @@ impl<'ctx> LifterX86<'ctx> {
             regs_hashmap: UnsafeCell::new(regs_hashmap),
             //func_value,
             stackmemory,
-            runtime_address: Cell::new(runtime_address),
+            runtime_address: runtime_address.map(Cell::new),
         };
         Ok(s)
     }
 
-    //pub fn lift_function(
-    //    &self,
-    //    instructions: &Vec<FullInstruction>,
-    //    func_value: FunctionValue<'ctx>,
-    //    //) -> Result<&FunctionValue> {
-    //) -> Result<FunctionValue> {
-    //    #[cfg(debug_assertions)]
-    //    let formatter = zydis::Formatter::intel();
-    //
-    //    #[cfg(debug_assertions)]
-    //    let mut problems_hs = std::collections::HashSet::new();
-    //
-    //    for instruction in instructions {
-    //        #[cfg(debug_assertions)]
-    //        {
-    //            let formatted = formatter.format(None, instruction).unwrap();
-    //            println!("{formatted}")
-    //        }
-    //        //if [
-    //        //    InstructionCategory::CALL,
-    //        //    InstructionCategory::COND_BR,
-    //        //    InstructionCategory::UNCOND_BR,
-    //        //    //InstructionCategory::RET,
-    //        //]
-    //        //.contains(&instruction.meta.category)
-    //        //{
-    //        //    #[cfg(debug_assertions)]
-    //        //    eprintln!("Skipping {}", instruction.mnemonic);
-    //        //} else {
-    //        //    if self.lift_instr(&instruction).is_err() {
-    //        //        #[cfg(debug_assertions)]
-    //        //        problems_hs.insert(instruction.mnemonic);
-    //        //    }
-    //        //}
-    //
-    //        if self.lift_instr(instruction).is_err() {
-    //            #[cfg(debug_assertions)]
-    //            problems_hs.insert(instruction.mnemonic);
-    //        }
-    //    }
-    //
-    //    #[cfg(debug_assertions)]
-    //    dbg!(problems_hs);
-    //
-    //    let rax = zydis::Register::AX.largest_enclosing(self.mode);
-    //
-    //    if let Ok(rax_val) = self.load_reg_internal(&rax) {
-    //        let rax_as_int: IntValue<'ctx> = rax_val.try_into()?;
-    //        self.builder.build_return(Some(&rax_as_int))?;
-    //    }
-    //
-    //    //Ok(&self.func_value)
-    //    Ok(func_value)
-    //}
+    pub(crate) fn runtime_address(&self) -> Option<u64> {
+        self.runtime_address
+            .as_ref()
+            .map(|addr_cell| addr_cell.get())
+    }
+
+    pub(crate) fn increase_ip(&self, instr_length: u8) {
+        let Some(current_ip_cell) = &self.runtime_address else {
+            return;
+        };
+
+        let current_ip = current_ip_cell.get();
+        let updated_ip = current_ip + instr_length as u64;
+
+        current_ip_cell.set(updated_ip);
+    }
 
     pub(super) fn get_max_int_type(&self) -> IntType<'ctx> {
         let example_reg = Register::AX.largest_enclosing(self.mode); // random rax for convenience
@@ -182,77 +144,11 @@ impl<'ctx> LifterX86<'ctx> {
         }
     }
 
-    pub(crate) fn retdec_calc_mem_operand(&self, mem: &MemoryInfo) -> Result<IntValue<'ctx>> {
-        let builder = &self.builder;
-
-        let base_r = self.load_register_value(&mem.base).ok();
-
-        let t = match base_r {
-            Some(PossibleLLVMValueEnum::FloatValue(_)) => unreachable!(),
-            Some(PossibleLLVMValueEnum::IntValue(int_val)) => int_val.get_type(),
-
-            None => self.retdec_get_default_type(),
-        };
-
-        let disp = if mem.disp.has_displacement {
-            let disp_val = mem.disp.displacement as u64;
-
-            // Not sure abt extend
-            Some(t.const_int(disp_val, true))
-        } else {
-            None
-        };
-
-        let mut idx_r = self.load_register_value(&mem.index).ok();
-
-        if let Some(PossibleLLVMValueEnum::IntValue(idx_r_)) = idx_r {
-            let scale = idx_r_.get_type().const_int(mem.scale.into(), false);
-            idx_r = Some(builder.build_int_mul(scale, scale, "")?.into());
-        }
-
-        let addr = if let (Some(PossibleLLVMValueEnum::IntValue(base_r)), None) = (base_r, disp) {
-            base_r
-        } else if let (Some(disp), None) = (disp, base_r) {
-            disp
-        } else if let (Some(PossibleLLVMValueEnum::IntValue(base_r_)), Some(disp_)) = (base_r, disp)
-        {
-            let disp_new = self.create_s_ext_or_trunc(disp_, base_r_.get_type())?;
-            builder.build_int_add(base_r_, disp_new, "")?
-        } else if let Some(PossibleLLVMValueEnum::IntValue(idx_r)) = idx_r {
-            idx_r
-        } else {
-            self.retdec_get_default_type().const_zero()
-        };
-
-        Ok(addr)
-    }
-
-    pub(crate) fn create_s_ext_or_trunc(
-        &self,
-        value: IntValue<'ctx>,
-        dest: IntType<'ctx>,
-    ) -> Result<IntValue<'ctx>> {
-        let vty = value.get_type();
-        let builder = &self.builder;
-
-        if vty.get_bit_width() < dest.get_bit_width() {
-            Ok(builder.build_int_s_extend(value, dest, "")?)
-        } else {
-            Ok(builder.build_int_truncate(value, dest, "")?)
-        }
-    }
-
     pub fn retdec_get_default_type(&self) -> IntType<'ctx> {
         //self.retdec_get_integer_type_from_byte_size(self.retdec_get_arch_byte_size().into())
         let arch_byte_size = self.retdec_get_arch_byte_size();
         self.context.custom_width_int_type(arch_byte_size.into())
     }
-
-    //pub fn retdec_get_integer_type_from_byte_size(&self, size: u32) -> IntType<'ctx> {
-    //    //let sz = size * 8;
-    //    self.context.custom_width_int_type(size * 8)
-    //    //util::get_int_n_ty(self.context, sz)
-    //}
 
     pub fn retdec_get_arch_byte_size(&self) -> u8 {
         match self.mode {

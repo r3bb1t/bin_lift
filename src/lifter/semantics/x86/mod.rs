@@ -18,6 +18,7 @@ mod pop;
 mod push;
 mod ret;
 mod rotate;
+mod semaphore;
 mod setcc;
 mod shift;
 mod stringop;
@@ -39,9 +40,7 @@ impl Lifter for LifterX86<'_> {
         //    return Ok(());
         //}
 
-        let current_ip = self.runtime_address.get();
-        let updated_ip = current_ip + u64::from(instr.length);
-        self.runtime_address.set(updated_ip);
+        self.increase_ip(instr.length);
 
         #[cfg(debug_assertions)]
         {
@@ -50,7 +49,9 @@ impl Lifter for LifterX86<'_> {
                 .format(None, instr)
                 .unwrap_or("unformattable".to_string());
             // FIXME: Ip tracking isn't implemented yet
-            let disassembly = format!("0x{updated_ip:<24X} {} ; ", formatted);
+
+            let runtime_address_option = self.runtime_address();
+            let disassembly = format!("{runtime_address_option:<24X?} {} ; ", formatted);
             println!("{disassembly}");
             self.builder
                 .build_alloca(self.context.i128_type(), &disassembly)?;
@@ -162,6 +163,9 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::ROL => self.lift_rol(instr),
             Mnemonic::ROR => self.lift_ror(instr),
 
+            // semaphore
+            Mnemonic::XADD => self.lift_xadd(instr),
+
             // setcc
             // NOTE: checked
             Mnemonic::SETB => self.lift_setb(instr),
@@ -189,16 +193,16 @@ impl Lifter for LifterX86<'_> {
             Mnemonic::SHR | Mnemonic::SHRX => self.lift_shr(instr),
             Mnemonic::SHRD => self.lift_shrd(instr),
 
-            // Stringop
+            // stringop
             // NOTE: checked
             Mnemonic::MOVSB | Mnemonic::MOVSW | Mnemonic::MOVSD | Mnemonic::MOVSQ => {
                 self.lift_movs_x(instr)
             }
 
-            // System
+            // system
             Mnemonic::RDTSC => self.lift_rdtsc(),
 
-            // UNCOND_BR
+            // uncond_br
             Mnemonic::JMP => self.lift_jmp(instr),
 
             // TODO: Add  flagops

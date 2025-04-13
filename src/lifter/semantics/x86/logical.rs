@@ -63,22 +63,17 @@ impl LifterX86<'_> {
         let lhs = self.load_single_int_op(dest, dest.size)?;
 
         let result = self.builder.build_or(lhs, rhs, "")?;
-        let bool_ty = self.context.bool_type();
 
+        let pf = self.compute_parity_flag(result)?;
         let sf = self.compute_sign_flag(result)?;
         let zf = self.compute_zero_flag(result)?;
 
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
         self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
         self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
 
-        self.retdec_store_registers_plus_sflags(
-            result,
-            &[
-                (ExtendedRegisterEnum::AF, bool_ty.const_int(0, false)),
-                (ExtendedRegisterEnum::CF, bool_ty.const_int(0, false)),
-                (ExtendedRegisterEnum::OF, bool_ty.const_int(0, false)),
-            ],
-        )?;
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false);
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false);
 
         self.store_op(dest, result)?;
         Ok(())

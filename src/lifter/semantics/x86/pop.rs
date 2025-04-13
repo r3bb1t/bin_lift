@@ -14,11 +14,15 @@ impl LifterX86<'_> {
         let r_value = self.load_single_op(src, dest.size)?;
         let rsp_value: IntValue<'_> = self.load_single_op(rsp, rsp.size)?.try_into()?;
 
+        //let val = self
+        //    .context
+        //    .custom_width_int_type(dest.size.into())
+        //    .const_int((dest.size / 8).into(), true);
+
         let val = self
             .context
-            // TODO: check this. Different from Mergen
-            .custom_width_int_type(dest.size.into())
-            .const_int((dest.size / 8).into(), true);
+            .i64_type()
+            .const_int((dest.size / 8).into(), false);
         let result = self
             .builder
             .build_int_add(rsp_value, val, "popping_new_rsp_")?;
@@ -39,11 +43,16 @@ impl LifterX86<'_> {
         let r_value = self.load_single_op(src, dest.size)?;
         let rsp_value: IntValue<'_> = self.load_single_op(rsp, rsp.size)?.try_into()?;
 
+        //let val = self
+        //    .context
+        //    // TODO: check this. Different from Mergen
+        //    .custom_width_int_type(dest.size.into())
+        //    .const_int((dest.size / 8).into(), true);
+
         let val = self
             .context
-            // TODO: check this. Different from Mergen
-            .custom_width_int_type(dest.size.into())
-            .const_int((dest.size / 8).into(), true);
+            .i64_type()
+            .const_int((dest.size / 8).into(), false);
         let result = self.builder.build_int_add(rsp_value, val, "popfq")?;
 
         self.store_op(dest, r_value)?;

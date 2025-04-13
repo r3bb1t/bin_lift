@@ -1,5 +1,5 @@
 use inkwell::values::IntValue;
-use zydis::{Instruction, Operands, Register};
+use zydis::{ffi::DecodedOperandKind, Instruction, Operands, Register};
 
 use super::Result;
 use crate::lifter::LifterX86;
@@ -14,19 +14,20 @@ impl LifterX86<'_> {
         let updated_rip_val = self.builder.build_int_add(rip_val, destination, "")?;
         self.store_reg(rip_reg, updated_rip_val)?;
 
-        #[cfg(debug_assertions)]
-        {
-            if let Some(constant) = destination.get_sign_extended_constant() {
-                eprintln!("JMP destination: {constant}");
-                let old_ip = self.runtime_address.get();
-                let new_ip = old_ip.wrapping_sub(constant as u64);
-                self.runtime_address.set(new_ip);
-            } else {
-                dbg!(dst_op);
-                dbg!(destination);
-                eprintln!("ERROR: JMP operand is not a constant")
-            }
-        }
+        //#[cfg(debug_assertions)]
+        //{
+        //    if let Some(constant) = destination.get_sign_extended_constant() {
+        //        eprintln!("JMP destination: {constant}");
+        //        if let Some(old_ip) = self.runtime_address() {
+        //            let new_ip = old_ip.wrapping_sub(constant as u64);
+        //            self.runtime_address.set(new_ip);
+        //        }
+        //    } else {
+        //        dbg!(dst_op);
+        //        dbg!(destination);
+        //        eprintln!("ERROR: JMP operand is not a constant")
+        //    }
+        //}
 
         //panic!("{:#?}", instr.operands());
         Ok(())

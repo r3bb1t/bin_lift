@@ -49,9 +49,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     //let lifter = LifterX86::new(&context, mode);
     const START_ADDRESS: u64 = 0x1400118d9;
-    let compiler = Compiler::new_with_x86_lifter(&context, mode, START_ADDRESS)?;
+    let compiler = Compiler::new_with_x86_lifter(&context, mode, Some(START_ADDRESS))?;
     //let lifter = LifterX86::new(&context, mode)?;
-    compiler.lift_function(&instructions)?;
+    compiler.lift_function(&instructions, true)?;
     let elapsed = now.elapsed();
 
     println!("Lifted vec with {instrs_count} instructions. Took {elapsed:?}");

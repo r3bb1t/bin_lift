@@ -56,7 +56,6 @@ impl LifterX86<'_> {
         let builder = &self.builder;
         let ops = instr.operands();
 
-        let rsp_addr = &ops[2];
         let rsp_value: IntValue<'_> = self.get_register(Register::SP)?.try_into()?;
 
         let mut rsp_addr = if let DecodedOperandKind::Imm(_) = &ops[0].kind {
@@ -74,6 +73,7 @@ impl LifterX86<'_> {
 
         let rop_result = if let Some(const_int) = rsp_value.get_sign_extended_constant() {
             let rsp_val = const_int;
+            // TODO: compare with Stackp_value
             RopResult::RealReturn
         } else {
             RopResult::RopReturn
