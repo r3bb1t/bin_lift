@@ -37,4 +37,4 @@ __int64 __fastcall add(int a, int b, int c)
 
 
 You need to edit output to be able to compile it. 
-https://godbolt.org/z/ovP8jPsdj
+https://godbolt.org/z/rv1YhsYjM
