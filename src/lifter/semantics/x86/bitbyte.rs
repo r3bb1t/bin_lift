@@ -1,285 +1,193 @@
-use super::{LifterX86, Result};
+use super::Result;
+use crate::lifter::{Error, LifterX86};
 use crate::miscellaneous::ExtendedRegisterEnum;
 
-use inkwell::{values::IntValue, IntPredicate};
-use zydis::{Instruction, Operands};
+use llvmkit::ir::{IntDyn, IntValue};
+use zydis::{Instruction, Mnemonic, Operands};
 
-impl LifterX86<'_> {
-    pub(super) fn lift_bsr<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = &instr.operands();
-
-        let dst = &ops[0];
-        let src = &ops[1];
-
-        let r_value: IntValue<'_> = self.load_single_op(src, src.size)?.try_into()?;
-        let r_value_ty = r_value.get_type();
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    pub(super) fn lift_bsr<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        let dest = &operands[0];
+        let src = &operands[1];
+        let value = self.load_single_int_op(src, dest.size)?;
+        let ty = value.ty();
         let is_zero =
-            builder.build_int_compare(IntPredicate::EQ, r_value, r_value_ty.const_zero(), "")?;
+            self.builder()?
+                .build_icmp_eq::<IntDyn, _, _, _>(value, ty.const_zero(), "bsr_zf")?;
 
-        self.store_cpu_flag(ExtendedRegisterEnum::ZF, is_zero);
-
-        let bit_width = r_value_ty.get_bit_width();
-
-        let mut index = r_value_ty.const_int((bit_width - 1).into(), false);
-        let zero_val = r_value_ty.const_zero();
-        let one_val = r_value_ty.const_int(1, false);
-
-        // Basically -1
-        let mut bit_position = r_value_ty.const_int(u64::MAX, true);
-
-        for _ in 0..bit_width {
-            let mask = builder.build_left_shift(one_val, index, "")?;
-
-            let test = builder.build_and(r_value, mask, "")?;
-            let is_bit_set = builder.build_int_compare(IntPredicate::NE, test, zero_val, "")?;
-
-            let tmp_position = builder
-                .build_select(is_bit_set, index, bit_position, "")?
-                .into_int_value();
-
-            let is_position_unset = builder.build_int_compare(
-                IntPredicate::EQ,
-                bit_position,
-                r_value_ty.const_int(u64::MAX, true),
-                "",
+        let mut found = self.module.bool_type().const_zero().as_value().try_into()?;
+        let mut result: IntValue<'ctx, IntDyn> = ty.const_zero().as_value().try_into()?;
+        for index in (0..ty.bit_width()).rev() {
+            let mask = self.builder()?.build_int_shl::<IntDyn, _, _, _>(
+                ty.const_int_raw(1, false)?,
+                ty.const_int_raw(u64::from(index), false)?,
+                "bsr_mask",
             )?;
-
-            bit_position = builder
-                .build_select(is_position_unset, tmp_position, bit_position, "")?
-                .into_int_value();
-
-            index = builder.build_int_sub(index, one_val, "")?;
+            let selected =
+                self.builder()?
+                    .build_int_and::<IntDyn, _, _, _>(value, mask, "bsr_selected")?;
+            let bit_set = self.builder()?.build_icmp_ne::<IntDyn, _, _, _>(
+                selected,
+                ty.const_zero(),
+                "bsr_bit_set",
+            )?;
+            let not_found = self.builder()?.build_icmp_eq::<bool, _, _, _>(
+                found,
+                self.module.bool_type().const_zero(),
+                "bsr_not_found",
+            )?;
+            let should_set = self.builder()?.build_int_and::<bool, _, _, _>(
+                not_found,
+                bit_set,
+                "bsr_should_set",
+            )?;
+            let index_value: IntValue<'ctx, IntDyn> = ty
+                .const_int_raw(u64::from(index), false)?
+                .as_value()
+                .try_into()?;
+            result = self
+                .builder()?
+                .build_select(should_set, index_value, result, "bsr_result")?;
+            found = self
+                .builder()?
+                .build_int_or::<bool, _, _, _>(found, bit_set, "bsr_found")?;
         }
 
-        self.store_op(dst, bit_position)?;
-        Ok(())
+        let old_dest = self.load_single_int_op(dest, dest.size)?;
+        let result = self
+            .builder()?
+            .build_select(is_zero, old_dest, result, "bsr_zero_result")?;
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, is_zero.as_dyn())?;
+        self.store_op(dest, result)
     }
 
-    pub(super) fn lift_bsf<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = &instr.operands();
-
-        let dst = &ops[0];
-        let src = &ops[1];
-
-        let r_value: IntValue<'_> = self.load_single_op(src, src.size)?.try_into()?;
-        let int_type = r_value.get_type();
-
+    pub(super) fn lift_bsf<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        let dest = &operands[0];
+        let src = &operands[1];
+        let value = self.load_single_int_op(src, dest.size)?;
+        let ty = value.ty();
         let is_zero =
-            builder.build_int_compare(IntPredicate::EQ, r_value, int_type.const_zero(), "")?;
+            self.builder()?
+                .build_icmp_eq::<IntDyn, _, _, _>(value, ty.const_zero(), "bsf_zf")?;
 
-        self.store_cpu_flag(ExtendedRegisterEnum::ZF, is_zero);
-
-        let int_width = int_type.get_bit_width();
-
-        let mut result = int_type.const_int(int_width.into(), false);
-        let one = int_type.const_int(1, false);
-
-        let mut continue_counting = self.context.custom_width_int_type(1).const_int(1, false);
-        for i in 0..int_width {
-            let bit_mask =
-                builder.build_left_shift(one, int_type.const_int(i.into(), false), "")?;
-            let bit_set = builder.build_and(r_value, bit_mask, "")?;
-            let is_bit_zero =
-                builder.build_int_compare(IntPredicate::EQ, bit_set, int_type.const_zero(), "")?;
-
-            let possible_result = int_type.const_int(i.into(), false);
-            let condition = builder.build_and(continue_counting, is_bit_zero, "")?;
-
-            continue_counting = builder.build_not(is_bit_zero, "")?;
-
-            result = builder
-                .build_select(condition, result, possible_result, "")?
-                .into_int_value();
+        let mut found = self.module.bool_type().const_zero().as_value().try_into()?;
+        let mut result: IntValue<'ctx, IntDyn> = ty.const_zero().as_value().try_into()?;
+        for index in 0..ty.bit_width() {
+            let mask = self.builder()?.build_int_shl::<IntDyn, _, _, _>(
+                ty.const_int_raw(1, false)?,
+                ty.const_int_raw(u64::from(index), false)?,
+                "bsf_mask",
+            )?;
+            let selected =
+                self.builder()?
+                    .build_int_and::<IntDyn, _, _, _>(value, mask, "bsf_selected")?;
+            let bit_set = self.builder()?.build_icmp_ne::<IntDyn, _, _, _>(
+                selected,
+                ty.const_zero(),
+                "bsf_bit_set",
+            )?;
+            let not_found = self.builder()?.build_icmp_eq::<bool, _, _, _>(
+                found,
+                self.module.bool_type().const_zero(),
+                "bsf_not_found",
+            )?;
+            let should_set = self.builder()?.build_int_and::<bool, _, _, _>(
+                not_found,
+                bit_set,
+                "bsf_should_set",
+            )?;
+            let index_value: IntValue<'ctx, IntDyn> = ty
+                .const_int_raw(u64::from(index), false)?
+                .as_value()
+                .try_into()?;
+            result = self
+                .builder()?
+                .build_select(should_set, index_value, result, "bsf_result")?;
+            found = self
+                .builder()?
+                .build_int_or::<bool, _, _, _>(found, bit_set, "bsf_found")?;
         }
 
-        self.store_op(dst, result)?;
-
-        Ok(())
+        let old_dest = self.load_single_int_op(dest, dest.size)?;
+        let result = self
+            .builder()?
+            .build_select(is_zero, old_dest, result, "bsf_zero_result")?;
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, is_zero.as_dyn())?;
+        self.store_op(dest, result)
     }
 
-    pub(super) fn lift_bt<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let dst = &ops[0];
-        let bit_index = &ops[1];
-
-        let l_value: IntValue = self.load_single_op(dst, dst.size)?.try_into()?;
-        let bit_index_value: IntValue = self.load_single_op(bit_index, dst.size)?.try_into()?;
-
-        let l_value_bit_w = l_value.get_type().get_bit_width();
-
-        let r_value = builder.build_and(
-            bit_index_value,
-            bit_index_value
-                .get_type()
-                .const_int((l_value_bit_w - 1).into(), false),
-            "",
-        )?;
-
-        let shl = builder.build_left_shift(
-            bit_index_value.get_type().const_int(1, false),
-            r_value,
-            "",
-        )?;
-
-        let and = builder.build_and(shl, l_value, "")?;
-        let cf =
-            builder.build_int_compare(IntPredicate::NE, and, and.get_type().const_zero(), "")?;
-
-        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
-
-        Ok(())
+    pub(super) fn lift_bt<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        self.bitbyte_lift_bit_test(instr, Mnemonic::BT)
     }
 
-    pub(super) fn lift_btc<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let base = &ops[0];
-        let offset = &ops[1];
-
-        let base_bit_width: u64 = base.size.into();
-
-        let bit_offset: IntValue = self.load_single_op(offset, base.size)?.try_into()?;
-
-        let bit_offset_masked = builder.build_and(
-            bit_offset,
-            bit_offset.get_type().const_int(base_bit_width - 1, false),
-            "",
-        )?;
-
-        let base_val: IntValue = self.load_single_op(base, base.size)?.try_into()?;
-        let mut bit = builder.build_right_shift(base_val, bit_offset_masked, false, "")?;
-
-        let one = bit.get_type().const_int(1, false);
-
-        bit = builder.build_and(bit, one, "")?;
-        self.store_cpu_flag(ExtendedRegisterEnum::CF, bit);
-
-        let mask = builder.build_left_shift(
-            base_val.get_type().const_int(1, false),
-            bit_offset_masked,
-            "",
-        )?;
-        let base_val = builder.build_xor(base_val, mask, "")?;
-
-        self.store_op(base, base_val)?;
-
-        Ok(())
+    pub(super) fn lift_btc<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        self.bitbyte_lift_bit_test(instr, Mnemonic::BTC)
     }
 
-    pub(super) fn lift_btr<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let base = &ops[0];
-        let offset = &ops[1];
-        let base_bit_width: u64 = base.size.into();
-
-        let bit_offset: IntValue = self.load_single_op(offset, base.size)?.try_into()?;
-        let bit_offset_ty = bit_offset.get_type();
-        let mut base_val = self.load_single_op(base, base.size)?.try_into()?;
-
-        let bit_offset_masked = builder.build_and(
-            bit_offset,
-            bit_offset_ty.const_int(base_bit_width - 1, false),
-            "",
-        )?;
-
-        let mut bit = builder.build_right_shift(base_val, bit_offset_masked, false, "")?;
-        let one = bit.get_type().const_int(1, false);
-
-        bit = builder.build_and(bit, one, "")?;
-
-        self.store_cpu_flag(ExtendedRegisterEnum::CF, bit);
-
-        let mut mask = builder.build_left_shift(
-            base_val.get_type().const_int(1, false),
-            bit_offset_masked,
-            "",
-        )?;
-
-        mask = builder.build_not(mask, "")?;
-        base_val = builder.build_and(base_val, mask, "")?;
-
-        self.store_op(base, base_val)?;
-
-        Ok(())
+    pub(super) fn lift_btr<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        self.bitbyte_lift_bit_test(instr, Mnemonic::BTR)
     }
 
-    //// TODO: Check this too
-    //pub(super) fn lift_bts<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-    //    let bldr = &self.builder;
-    //    let ops = instr.operands();
-    //
-    //    let operands = instr.operands();
-    //
-    //    let [op0, mut op1] = self.load_two_first_ints(operands)?;
-    //
-    //    let op0_bit_w = bldr
-    //        .build_int_cast(op0, op0.get_type(), "")?
-    //        .get_type()
-    //        .get_bit_width();
-    //
-    //    op1 = bldr.build_and(
-    //        op1,
-    //        op1.get_type().const_int((op0_bit_w - 1) as u64, false),
-    //        "",
-    //    )?;
-    //
-    //    let shl = bldr.build_left_shift(op1.get_type().const_int(1, false), op1, "")?;
-    //    let and = bldr.build_int_add(shl, op0, "")?;
-    //    let icmp = bldr.build_int_compare(
-    //        inkwell::IntPredicate::NE,
-    //        and,
-    //        and.get_type().const_zero(),
-    //        "",
-    //    )?;
-    //    self.store_cpu_flag(ExtendedRegister::CF, icmp);
-    //
-    //    let or1 = bldr.build_or(shl, op0, "")?;
-    //    //self.store_op(&ops[0].kind, or1)?;
-    //    self.store_op(&ops[0], or1)?;
-    //
-    //    Ok(())
-    //}
-    pub(super) fn lift_bts<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
+    pub(super) fn lift_bts<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        self.bitbyte_lift_bit_test(instr, Mnemonic::BTS)
+    }
 
-        let base = &ops[0];
-        let offset = &ops[1];
-        let base_bit_width: u64 = base.size.into();
-
-        let bit_offset: IntValue = self.load_single_op(offset, base.size)?.try_into()?;
-        let bit_offset_ty = bit_offset.get_type();
-        let mut base_val = self.load_single_op(base, base.size)?.try_into()?;
-
-        let bit_offset_masked = builder.build_and(
-            bit_offset,
-            bit_offset_ty.const_int(base_bit_width - 1, false),
-            "",
+    fn bitbyte_lift_bit_test<O: Operands>(
+        &mut self,
+        instr: &Instruction<O>,
+        mnemonic: Mnemonic,
+    ) -> Result<()> {
+        let operands = instr.operands();
+        let base = &operands[0];
+        let offset = &operands[1];
+        let base_value = self.load_single_int_op(base, base.size)?;
+        let offset_value = self.load_single_int_op(offset, base.size)?;
+        let ty = base_value.ty();
+        let bit_width = u64::from(ty.bit_width());
+        let masked_offset = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            offset_value,
+            offset_value.ty().const_int_raw(bit_width - 1, false)?,
+            "bit_offset",
         )?;
-
-        let mut bit = builder.build_right_shift(base_val, bit_offset_masked, false, "")?;
-        let one = bit.get_type().const_int(1, false);
-
-        bit = builder.build_and(bit, one, "")?;
-
-        self.store_cpu_flag(ExtendedRegisterEnum::CF, bit);
-
-        let mask = builder.build_left_shift(
-            base_val.get_type().const_int(1, false),
-            bit_offset_masked,
-            "",
+        let mask = self.builder()?.build_int_shl::<IntDyn, _, _, _>(
+            ty.const_int_raw(1, false)?,
+            masked_offset,
+            "bit_mask",
         )?;
+        let selected =
+            self.builder()?
+                .build_int_and::<IntDyn, _, _, _>(base_value, mask, "bit_selected")?;
+        let cf = self.builder()?.build_icmp_ne::<IntDyn, _, _, _>(
+            selected,
+            ty.const_zero(),
+            "bit_cf",
+        )?;
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf.as_dyn())?;
 
-        base_val = builder.build_or(base_val, mask, "")?;
-
-        self.store_op(base, base_val)?;
-        Ok(())
+        let result = match mnemonic {
+            Mnemonic::BT => return Ok(()),
+            Mnemonic::BTC => self
+                .builder()?
+                .build_int_xor::<IntDyn, _, _, _>(base_value, mask, "btc")?,
+            Mnemonic::BTR => {
+                let inverted_mask = self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+                    mask,
+                    ty.const_all_ones(),
+                    "btr_mask",
+                )?;
+                self.builder()?.build_int_and::<IntDyn, _, _, _>(
+                    base_value,
+                    inverted_mask,
+                    "btr",
+                )?
+            }
+            Mnemonic::BTS => self
+                .builder()?
+                .build_int_or::<IntDyn, _, _, _>(base_value, mask, "bts")?,
+            _ => return Err(Error::UnsupportedInstr("unsupported bit-test instruction")),
+        };
+        self.store_op(base, result)
     }
 }

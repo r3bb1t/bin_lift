@@ -1,237 +1,116 @@
-use super::{LifterX86, Result};
-use crate::miscellaneous::ExtendedRegisterEnum;
+use super::Result;
+use crate::lifter::{Error, LifterX86};
 
-use inkwell::IntPredicate;
-use zydis::{Instruction, Operands};
+use llvmkit::ir::IntValue;
+use zydis::{ffi::DecodedOperandKind, Instruction, Mnemonic, Operands};
 
-impl LifterX86<'_> {
-    pub(super) fn lift_setb<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-
-        let result = self
-            .builder
-            .build_int_z_extend(cf, self.context.i8_type(), "setb")?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
-    }
-
-    pub(super) fn lift_setbe<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-
-        let condition = builder.build_or(cf, zf, "setbe_or")?;
-
-        let result = builder.build_int_z_extend(condition, self.context.i8_type(), "setbe")?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
-    }
-
-    pub(super) fn lift_setl<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-
-        let condition = builder.build_int_compare(IntPredicate::NE, sf, of, "setl_condition")?;
-
-        let result = builder.build_int_z_extend(condition, self.context.i8_type(), "setl")?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
-    }
-
-    pub(super) fn lift_setle<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-
-        let sf_ne_of = builder.build_int_compare(IntPredicate::NE, sf, of, "setl_condition")?;
-        let condition = builder.build_or(zf, sf_ne_of, "setle_or")?;
-
-        let result = builder.build_int_z_extend(condition, self.context.i8_type(), "setle")?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
-    }
-
-    pub(super) fn lift_setnb<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-
-        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-
-        let result = builder.build_int_compare(
-            IntPredicate::EQ,
-            cf,
-            // in mergen its i1 , its strange, so i use cf type (which is i8)
-            cf.get_type().const_zero(),
-            "setnb_result",
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    fn lift_setcc_with_condition<O: Operands>(
+        &mut self,
+        instr: &Instruction<O>,
+        condition: IntValue<'ctx, bool>,
+    ) -> Result<()> {
+        let dest = instr
+            .operands()
+            .first()
+            .ok_or(Error::UnsupportedInstr("setcc missing destination operand"))?;
+        if !matches!(
+            &dest.kind,
+            DecodedOperandKind::Reg(_) | DecodedOperandKind::Mem(_)
+        ) {
+            return Err(Error::UnsupportedInstr(
+                "setcc requires register or memory destination",
+            ));
+        }
+        if dest.size != 8 {
+            return Err(Error::UnsupportedInstr("setcc requires 8-bit destination"));
+        }
+        let byte = self.builder()?.build_zext_dyn(
+            condition.as_dyn(),
+            self.module.i8_type().as_dyn(),
+            "setcc",
         )?;
 
-        let byte_result =
-            builder.build_int_z_extend(result, self.context.i8_type(), "setnb_byte_result")?;
-        self.store_op(&instr.operands()[0], byte_result)?;
-        Ok(())
+        self.store_op(dest, byte)
     }
 
-    pub(super) fn lift_setnbe<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-
-        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-
-        let condition = builder.build_and(
-            builder.build_not(cf, "not_cf")?,
-            builder.build_not(zf, "not_zf")?,
-            "setnbe_and",
-        )?;
-
-        let result = builder.build_int_z_extend(condition, self.context.i8_type(), "setl")?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
+    pub(super) fn lift_setb<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETB)?;
+        self.lift_setcc_with_condition(instr, condition)
     }
 
-    pub(super) fn lift_setnl<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-
-        let condition = builder.build_int_compare(IntPredicate::EQ, sf, of, "setnl_cond")?;
-
-        let result = builder.build_int_z_extend(condition, self.context.i8_type(), "setnl")?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
+    pub(super) fn lift_setbe<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETBE)?;
+        self.lift_setcc_with_condition(instr, condition)
     }
 
-    pub(super) fn lift_setnle<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-
-        let zf_not_set = builder.build_int_compare(
-            IntPredicate::EQ,
-            zf,
-            zf.get_type().const_zero(),
-            "setnle_zf_not",
-        )?;
-        let sf_eq_of = builder.build_int_compare(IntPredicate::EQ, sf, of, "sf_eq_of")?;
-
-        let combined_cond = builder.build_and(zf_not_set, sf_eq_of, "setnle-and")?;
-
-        let byte_result =
-            builder.build_int_z_extend(combined_cond, self.context.i8_type(), "setnle_result")?;
-
-        self.store_op(&instr.operands()[0], byte_result)?;
-        Ok(())
+    pub(super) fn lift_setl<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETL)?;
+        self.lift_setcc_with_condition(instr, condition)
     }
 
-    pub(super) fn lift_setno<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-
-        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-        let not_of = builder.build_not(of, "not_of")?;
-
-        let result =
-            self.builder
-                .build_int_z_extend(not_of, self.context.i8_type(), "setno_not_of_zext")?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
+    pub(super) fn lift_setle<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETLE)?;
+        self.lift_setcc_with_condition(instr, condition)
     }
 
-    pub(super) fn lift_setnp<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let pf = self.load_flag(ExtendedRegisterEnum::PF)?;
-
-        let result = builder.build_int_z_extend(
-            builder.build_not(pf, "not_pf")?,
-            self.context.i8_type(),
-            "setnp",
-        )?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
+    pub(super) fn lift_setnb<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETNB)?;
+        self.lift_setcc_with_condition(instr, condition)
     }
 
-    pub(super) fn lift_setns<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-
-        let result = builder.build_int_compare(
-            IntPredicate::EQ,
-            sf,
-            sf.get_type().const_zero(),
-            "setnb_result",
-        )?;
-
-        let byte_result =
-            builder.build_int_z_extend(result, self.context.i8_type(), "setnb_byte_result")?;
-        self.store_op(&instr.operands()[0], byte_result)?;
-        Ok(())
+    pub(super) fn lift_setnbe<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETNBE)?;
+        self.lift_setcc_with_condition(instr, condition)
     }
 
-    pub(super) fn lift_setnz<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-
-        let result = builder.build_int_z_extend(
-            builder.build_not(zf, "not_zf")?,
-            self.context.i8_type(),
-            "setnz",
-        )?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
+    pub(super) fn lift_setnl<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETNL)?;
+        self.lift_setcc_with_condition(instr, condition)
     }
 
-    pub(super) fn lift_seto<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-
-        let result = self
-            .builder
-            .build_int_z_extend(cf, self.context.i8_type(), "seto_result")?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
+    pub(super) fn lift_setnle<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETNLE)?;
+        self.lift_setcc_with_condition(instr, condition)
     }
 
-    pub(super) fn lift_setp<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let pf = self.load_flag(ExtendedRegisterEnum::PF)?;
-
-        let result = self
-            .builder
-            .build_int_z_extend(pf, self.context.i8_type(), "setp_extend")?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
+    pub(super) fn lift_setno<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETNO)?;
+        self.lift_setcc_with_condition(instr, condition)
     }
 
-    pub(super) fn lift_sets<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-
-        let result = self
-            .builder
-            .build_int_z_extend(sf, self.context.i8_type(), "sets")?;
-
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
+    pub(super) fn lift_setnp<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETNP)?;
+        self.lift_setcc_with_condition(instr, condition)
     }
 
-    pub(super) fn lift_setz<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
+    pub(super) fn lift_setns<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETNS)?;
+        self.lift_setcc_with_condition(instr, condition)
+    }
 
-        let result = self
-            .builder
-            .build_int_z_extend(zf, self.context.i8_type(), "setz_extend")?;
+    pub(super) fn lift_setnz<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETNZ)?;
+        self.lift_setcc_with_condition(instr, condition)
+    }
 
-        self.store_op(&instr.operands()[0], result)?;
-        Ok(())
+    pub(super) fn lift_seto<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETO)?;
+        self.lift_setcc_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_setp<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETP)?;
+        self.lift_setcc_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_sets<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETS)?;
+        self.lift_setcc_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_setz<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::SETZ)?;
+        self.lift_setcc_with_condition(instr, condition)
     }
 }

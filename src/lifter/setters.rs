@@ -1,199 +1,169 @@
-use super::{LifterX86, PossibleLLVMValueEnum, Result};
+use super::{LiftValue, LifterX86, Result};
 use crate::miscellaneous::ExtendedRegisterEnum;
 
-use inkwell::values::IntValue;
+use llvmkit::ir::{IntDyn, IntValue};
 use zydis::{
     ffi::{DecodedOperand, DecodedOperandKind},
     Register, RegisterClass,
 };
 
-impl<'ctx> LifterX86<'ctx> {
-    pub(super) fn store_op<T>(&self, op: &DecodedOperand, value: T) -> Result<()>
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    pub(super) fn store_op<T>(&mut self, op: &DecodedOperand, value: T) -> Result<()>
     where
-        PossibleLLVMValueEnum<'ctx>: From<T>,
+        LiftValue<'ctx>: From<T>,
     {
-        let val = PossibleLLVMValueEnum::from(value);
-
+        let val = LiftValue::from(value);
         match &op.kind {
-            // NOTE: When adding float support, must revisit this first
-            DecodedOperandKind::Reg(reg) => self.store_reg(*reg, val.try_into()?)?,
-            DecodedOperandKind::Mem(memory_info) => self.mergen_store_mem(memory_info, val)?,
-            _ => unreachable!("Tried to set value to operand with kind {:?}", op.kind),
-        };
-
-        Ok(())
+            DecodedOperandKind::Reg(reg) => self.store_reg(*reg, val.try_into()?),
+            DecodedOperandKind::Mem(mem) => self.mergen_store_mem(mem, val),
+            _ => Err(super::Error::UnsupportedInstr(
+                "unsupported destination operand kind",
+            )),
+        }
     }
 
-    //pub(super) fn store_mem(
-    //    &self,
-    //    mem: &MemoryInfo,
-    //    val: PossibleLLVMValueEnum<'ctx>,
-    //) -> Result<()> {
-    //    let builder = &self.builder;
-    //    let mem_addr = self.calc_mem_operand(mem)?;
-    //
-    //
-    //    let i8_ty = self.context.i8_type();
-    //    let pointer =
-    //        unsafe { builder.build_gep(i8_ty, self.stackmemory, &[mem_addr], "GEPSTORE")? };
-    //
-    //    let val: BasicValueEnum = val.into();
-    //    builder.build_store(pointer, val)?;
-    //    Ok(())
-    //}
-
-    pub(super) fn store_reg(&self, reg: Register, mut val: IntValue<'ctx>) -> Result<()> {
-        const GPR_8_BIT: [Register; 20] = [
-            Register::AL,
-            Register::CL,
-            Register::DL,
-            Register::BL,
-            Register::AH,
-            Register::CH,
-            Register::DH,
-            Register::BH,
-            Register::SPL,
-            Register::BPL,
-            Register::SIL,
-            Register::DIL,
-            Register::R8B,
-            Register::R9B,
-            Register::R10B,
-            Register::R11B,
-            Register::R12B,
-            Register::R13B,
-            Register::R14B,
-            Register::R15B,
-        ];
-
-        const GPR_16_BIT: [Register; 16] = [
-            Register::AX,
-            Register::CX,
-            Register::DX,
-            Register::BX,
-            Register::SP,
-            Register::BP,
-            Register::SI,
-            Register::DI,
-            Register::R8W,
-            Register::R9W,
-            Register::R10W,
-            Register::R11W,
-            Register::R12W,
-            Register::R13W,
-            Register::R14W,
-            Register::R15W,
-        ];
-
-        if GPR_8_BIT.contains(&reg) {
-            val = self.set_val_to_sub_reg_8b(reg, val)?;
-        }
-
-        if GPR_16_BIT.contains(&reg) {
-            val = self.set_val_to_sub_reg_16b(reg, val)?;
-        }
-
+    pub(super) fn store_reg(&mut self, reg: Register, val: IntValue<'ctx, IntDyn>) -> Result<()> {
         if reg.class() == RegisterClass::FLAGS {
             self.set_rflags_value(val)?;
             return Ok(());
         }
 
-        let new_key = if [RegisterClass::FLAGS, RegisterClass::IP].contains(&reg.class()) {
+        let key = if reg.class() == RegisterClass::IP {
             reg
         } else {
             self.get_register_largest_enclosing(&reg)
         };
+        let reg_width = reg.width(self.mode);
+        let key_width = key.width(self.mode);
+        let value = if reg_width < key_width && reg_width == 8 {
+            self.set_val_to_sub_reg_8b(reg, val)?
+        } else if reg_width < key_width && reg_width == 16 {
+            self.set_val_to_sub_reg_16b(reg, val)?
+        } else {
+            val
+        };
 
-        self.store_register_internal(new_key, val);
-
+        self.store_register_internal(key, value);
         Ok(())
     }
 
     fn set_val_to_sub_reg_8b(
         &self,
         reg: Register,
-        value: IntValue<'ctx>,
-    ) -> Result<IntValue<'ctx>> {
-        let builder = &self.builder;
-        let ctx = self.context;
-
-        let full_reg_key = reg.largest_enclosing(self.mode);
-        let mut full_reg_value = self.load_register_value(&full_reg_key)?.try_into()?;
-        //full_reg_value = self.create_z_ext_or_trunc(full_reg_value, ctx.i64_type())?;
-        full_reg_value = self.create_z_ext_or_trunc(full_reg_value, self.get_max_int_type())?;
-
-        let mut extended_value = builder.build_int_z_extend(value, ctx.i64_type(), "")?;
-
-        let is_high_byte_reg =
-            [Register::AH, Register::CH, Register::DH, Register::BH].contains(&reg);
-
-        let mask: u64 = if is_high_byte_reg {
-            0xFFFFFFFFFFFF00FF
-        } else {
-            0xFFFFFFFFFFFFFF00
+        value: IntValue<'ctx, IntDyn>,
+    ) -> Result<IntValue<'ctx, IntDyn>> {
+        let full_reg_key = self.get_register_largest_enclosing(&reg);
+        let full_ty = self
+            .module
+            .custom_width_int_type(u32::from(full_reg_key.width(self.mode)))?;
+        let full_value: IntValue<'ctx, IntDyn> =
+            self.load_register_value(&full_reg_key)?.try_into()?;
+        let full_value = self.create_z_ext_or_trunc(full_value, full_ty)?;
+        let mut extended_value = self.create_z_ext_or_trunc(value, full_ty)?;
+        let high_byte = [Register::AH, Register::CH, Register::DH, Register::BH].contains(&reg);
+        let mask = match (full_ty.bit_width(), high_byte) {
+            (64, true) => 0xFFFF_FFFF_FFFF_00FF,
+            (64, false) => 0xFFFF_FFFF_FFFF_FF00,
+            (32, true) => 0xFFFF_00FF,
+            (32, false) => 0xFFFF_FF00,
+            (16, true) => 0x00FF,
+            (16, false) => 0xFF00,
+            _ => return Ok(value),
         };
-
-        let mask_value = ctx.i64_type().const_int(mask, false);
-        let masked_full_reg = builder.build_and(full_reg_value, mask_value, "maskedreg_")?;
-
-        if is_high_byte_reg {
-            extended_value = builder.build_left_shift(
+        let masked_full_reg = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            full_value,
+            full_ty.const_int_raw(mask, false)?,
+            "maskedreg_",
+        )?;
+        if high_byte {
+            extended_value = self.builder()?.build_int_shl::<IntDyn, _, _, _>(
                 extended_value,
-                extended_value.get_type().const_int(8, false),
+                full_ty.const_int_raw(8, false)?,
                 "shifted_value_",
             )?;
         }
-
-        let updated_reg = builder.build_or(masked_full_reg, extended_value, "newreg_")?;
-
-        self.store_register_internal(full_reg_key, updated_reg);
-
-        Ok(updated_reg)
+        Ok(self.builder()?.build_int_or::<IntDyn, _, _, _>(
+            masked_full_reg,
+            extended_value,
+            "newreg_",
+        )?)
     }
 
     fn set_val_to_sub_reg_16b(
         &self,
         reg: Register,
-        value: IntValue<'ctx>,
-    ) -> Result<IntValue<'ctx>> {
-        let builder = &self.builder;
-
-        let full_reg_key = reg.largest_enclosing(self.mode);
-        let full_reg_value: IntValue<'_> = self.load_register_value(&full_reg_key)?.try_into()?;
-        let last_4_cleared = full_reg_value
-            .get_type()
-            .const_int(0xFFFFFFFFFFFF0000, false);
-        let masked_full_reg = builder.build_and(full_reg_value, last_4_cleared, "maskedreg_")?;
-        let value = builder.build_int_z_extend(value, full_reg_value.get_type(), "")?;
-
-        let updated_reg = builder.build_or(masked_full_reg, value, "newreg_")?;
-        Ok(updated_reg)
-    }
-
-    fn store_register_internal<T>(&self, r: Register, val: T)
-    where
-        PossibleLLVMValueEnum<'ctx>: From<T>,
-    {
-        let value = PossibleLLVMValueEnum::from(val);
-        let pr = self.get_register_largest_enclosing(&r);
-        let regs_hashmap = self.regs_hashmap_mut();
-        regs_hashmap.insert(pr.into(), value);
-    }
-
-    pub(super) fn store_cpu_flag(&self, flag: ExtendedRegisterEnum, val: IntValue<'ctx>) {
-        let reg_type = self.context.custom_width_int_type(1);
-        let val = self.create_z_ext_or_trunc(val, reg_type).unwrap();
-        let regs = self.regs_hashmap_mut();
-        regs.insert(flag, val.into());
-    }
-
-    pub(super) fn store_cpu_flag_bool(&self, cpu_flag: ExtendedRegisterEnum, val: bool) {
-        let bool_ty = &self.context.bool_type();
-        let value = match val {
-            true => bool_ty.const_int(1, false),
-            false => bool_ty.const_zero(),
+        value: IntValue<'ctx, IntDyn>,
+    ) -> Result<IntValue<'ctx, IntDyn>> {
+        let full_reg_key = self.get_register_largest_enclosing(&reg);
+        let full_ty = self
+            .module
+            .custom_width_int_type(u32::from(full_reg_key.width(self.mode)))?;
+        let full_value: IntValue<'ctx, IntDyn> =
+            self.load_register_value(&full_reg_key)?.try_into()?;
+        let full_value = self.create_z_ext_or_trunc(full_value, full_ty)?;
+        let mask = match full_ty.bit_width() {
+            64 => 0xFFFF_FFFF_FFFF_0000,
+            32 => 0xFFFF_0000,
+            _ => return Ok(value),
         };
-        let regs_hashmap = self.regs_hashmap_mut();
-        regs_hashmap.insert(cpu_flag, value.into());
+        let masked_full_reg = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            full_value,
+            full_ty.const_int_raw(mask, false)?,
+            "maskedreg_",
+        )?;
+        let extended_value = self.create_z_ext_or_trunc(value, full_ty)?;
+        Ok(self.builder()?.build_int_or::<IntDyn, _, _, _>(
+            masked_full_reg,
+            extended_value,
+            "newreg_",
+        )?)
+    }
+
+    fn store_register_internal<T>(&mut self, register: Register, value: T)
+    where
+        LiftValue<'ctx>: From<T>,
+    {
+        let key = self.get_register_largest_enclosing(&register);
+        self.regs_hashmap_mut()
+            .insert(key.into(), LiftValue::from(value));
+    }
+
+    pub(super) fn store_cpu_flag(
+        &mut self,
+        flag: ExtendedRegisterEnum,
+        value: IntValue<'ctx, IntDyn>,
+    ) -> Result<()> {
+        let value = self.create_z_ext_or_trunc(value, self.module.bool_type().as_dyn())?;
+        self.regs_hashmap_mut().insert(flag, value.into());
+        Ok(())
+    }
+
+    pub(super) fn store_cpu_flag_bool(
+        &mut self,
+        flag: ExtendedRegisterEnum,
+        value: bool,
+    ) -> Result<()> {
+        let value = if value {
+            self.module.bool_type().const_int(true)
+        } else {
+            self.module.bool_type().const_zero()
+        };
+        self.regs_hashmap_mut().insert(flag, value.into());
+        Ok(())
+    }
+
+    fn set_rflags_value(&mut self, value: IntValue<'ctx, IntDyn>) -> Result<()> {
+        let flag_ty = value.ty();
+        for flag in 0_u64..12 {
+            let shifted_flag_value = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+                value,
+                flag_ty.const_int_raw(flag, false)?,
+                "",
+            )?;
+            let flag_value =
+                self.create_z_ext_or_trunc(shifted_flag_value, self.module.bool_type().as_dyn())?;
+            self.store_cpu_flag(Self::resolve_flag_from_range(flag)?, flag_value)?;
+        }
+        Ok(())
     }
 }

@@ -1,74 +1,159 @@
-use super::{LifterX86, Result};
+use super::Result;
+use crate::lifter::{Error, LifterX86};
 use crate::miscellaneous::ExtendedRegisterEnum;
 
-use inkwell::IntPredicate;
-use zydis::{Instruction, Operands};
+use llvmkit::ir::{AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, IntDyn, IntValue, SyncScope};
+use zydis::{ffi::DecodedOperandKind, Instruction, Operands};
 
-impl LifterX86<'_> {
-    pub(super) fn lift_xadd<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    pub(super) fn lift_xadd<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
         let operands = instr.operands();
+        if operands.len() < 2 {
+            return Err(Error::UnsupportedInstr("xadd requires two operands"));
+        }
         let dest = &operands[0];
         let src = &operands[1];
+        if !matches!(&src.kind, DecodedOperandKind::Reg(_)) {
+            return Err(Error::UnsupportedInstr("xadd source must be register"));
+        }
 
-        let lhs = self.load_single_int_op(dest, dest.size)?;
         let rhs = self.load_single_int_op(src, dest.size)?;
-
-        let l_value_ty = lhs.get_type();
-
-        let temp = builder.build_int_add(lhs, rhs, "xadd_sum_")?;
-
-        self.store_op(src, lhs)?;
-        self.store_op(dest, temp)?;
-
-        let cf = builder.build_or(
-            builder.build_int_compare(IntPredicate::ULT, temp, lhs, "")?,
-            builder.build_int_compare(IntPredicate::ULT, temp, rhs, "")?,
-            "",
-        )?;
-
-        let af = {
-            let lower_nibble_mask = l_value_ty.const_int(0xF, false);
-            let dest_lower_nibble = builder.build_and(lhs, lower_nibble_mask, "xadddst_")?;
-            let src_lower_nibble = builder.build_and(rhs, lower_nibble_mask, "xaddsrc_")?;
-            let sum_lower_nibble =
-                builder.build_int_add(dest_lower_nibble, src_lower_nibble, "")?;
-
-            builder.build_int_compare(
-                IntPredicate::ULT,
-                sum_lower_nibble,
-                lower_nibble_mask,
-                "xadd_af_",
-            )?
+        let (lhs, result) = match &dest.kind {
+            DecodedOperandKind::Mem(mem) => {
+                let pointer = self.mergen_calculate_memory_operand(mem)?;
+                let old_inst = self.builder()?.build_atomicrmw(
+                    AtomicRMWBinOp::Add,
+                    pointer,
+                    rhs,
+                    AtomicRMWConfig::new(AtomicOrdering::SequentiallyConsistent, SyncScope::System),
+                    "xadd_atomic",
+                )?;
+                let lhs: IntValue<'ctx, IntDyn> =
+                    old_inst.as_instruction().as_value().try_into()?;
+                let result = self
+                    .builder()?
+                    .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "xadd_sum")?;
+                self.store_op(src, lhs)?;
+                (lhs, result)
+            }
+            DecodedOperandKind::Reg(_) => {
+                let lhs = self.load_single_int_op(dest, dest.size)?;
+                let result = self
+                    .builder()?
+                    .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "xadd_sum")?;
+                self.store_op(src, lhs)?;
+                self.store_op(dest, result)?;
+                (lhs, result)
+            }
+            _ => {
+                return Err(Error::UnsupportedInstr(
+                    "xadd destination must be register or memory",
+                ))
+            }
         };
 
-        let lhs_ty_zero = l_value_ty.const_zero();
-        let result_sign = builder.build_int_compare(IntPredicate::SLT, temp, lhs_ty_zero, "")?;
-        let dest_sign = builder.build_int_compare(IntPredicate::SLT, lhs, lhs_ty_zero, "")?;
-        let src_sign =
-            builder.build_int_compare(IntPredicate::SLT, rhs, rhs.get_type().const_zero(), "")?;
+        self.store_xadd_flags(lhs, rhs, result)
+    }
 
-        let input_same_sign =
-            builder.build_int_compare(IntPredicate::EQ, dest_sign, src_sign, "")?;
-        let of = builder.build_and(
-            input_same_sign,
-            builder.build_int_compare(IntPredicate::NE, dest_sign, result_sign, "")?,
-            "",
+    fn store_xadd_flags(
+        &mut self,
+        lhs: IntValue<'ctx, IntDyn>,
+        rhs: IntValue<'ctx, IntDyn>,
+        result: IntValue<'ctx, IntDyn>,
+    ) -> Result<()> {
+        let cf_lhs =
+            self.builder()?
+                .build_icmp_ult::<IntDyn, _, _, _>(result, lhs, "xadd_cf_lhs")?;
+        let cf_rhs =
+            self.builder()?
+                .build_icmp_ult::<IntDyn, _, _, _>(result, rhs, "xadd_cf_rhs")?;
+        let cf = self
+            .builder()?
+            .build_int_or::<bool, _, _, _>(cf_lhs, cf_rhs, "xadd_cf")?;
+
+        let xor_inputs =
+            self.builder()?
+                .build_int_xor::<IntDyn, _, _, _>(lhs, rhs, "xadd_af_inputs")?;
+        let xor_result = self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+            xor_inputs,
+            result,
+            "xadd_af_result",
+        )?;
+        let aux_bit = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            xor_result,
+            result.ty().const_int_raw(0x10, false)?,
+            "xadd_af_bit",
+        )?;
+        let af = self.builder()?.build_icmp_ne::<IntDyn, _, _, _>(
+            aux_bit,
+            result.ty().const_zero(),
+            "xadd_af",
         )?;
 
-        let pf = self.compute_parity_flag(temp)?;
-        let sf = self.compute_sign_flag(temp)?;
-        let zf = self.compute_zero_flag(temp)?;
+        let zero = result.ty().const_zero();
+        let result_sign =
+            self.builder()?
+                .build_icmp_slt::<IntDyn, _, _, _>(result, zero, "xadd_result_sign")?;
+        let lhs_sign =
+            self.builder()?
+                .build_icmp_slt::<IntDyn, _, _, _>(lhs, zero, "xadd_lhs_sign")?;
+        let rhs_sign =
+            self.builder()?
+                .build_icmp_slt::<IntDyn, _, _, _>(rhs, zero, "xadd_rhs_sign")?;
+        let same_input_sign =
+            self.builder()?
+                .build_icmp_eq::<bool, _, _, _>(lhs_sign, rhs_sign, "xadd_same_sign")?;
+        let sign_changed = self.builder()?.build_icmp_ne::<bool, _, _, _>(
+            lhs_sign,
+            result_sign,
+            "xadd_sign_changed",
+        )?;
+        let of = self.builder()?.build_int_and::<bool, _, _, _>(
+            same_input_sign,
+            sign_changed,
+            "xadd_of",
+        )?;
 
-        self.store_cpu_flag(ExtendedRegisterEnum::AF, af);
-        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
-        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
+        let pf = self.xadd_even_parity(result)?;
+        let sf = self
+            .builder()?
+            .build_icmp_slt::<IntDyn, _, _, _>(result, zero, "xadd_sf")?;
+        let zf = self
+            .builder()?
+            .build_icmp_eq::<IntDyn, _, _, _>(result, zero, "xadd_zf")?;
 
-        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
-        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
-        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
+        self.store_cpu_flag(ExtendedRegisterEnum::AF, af.as_dyn())?;
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf.as_dyn())?;
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of.as_dyn())?;
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf.as_dyn())?;
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf.as_dyn())?;
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf.as_dyn())
+    }
 
-        Ok(())
+    fn xadd_even_parity(&self, value: IntValue<'ctx, IntDyn>) -> Result<IntValue<'ctx, bool>> {
+        let i8_ty = self.module.i8_type().as_dyn();
+        let mut folded = self.create_z_ext_or_trunc(value, i8_ty)?;
+        for shift in [4_u64, 2, 1] {
+            let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+                folded,
+                i8_ty.const_int_raw(shift, false)?,
+                "xadd_parity_shift",
+            )?;
+            folded = self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+                folded,
+                shifted,
+                "xadd_parity_fold",
+            )?;
+        }
+        let low_bit = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            folded,
+            i8_ty.const_int_raw(1, false)?,
+            "xadd_parity_bit",
+        )?;
+        Ok(self.builder()?.build_icmp_eq::<IntDyn, _, _, _>(
+            low_bit,
+            i8_ty.const_zero(),
+            "xadd_pf",
+        )?)
     }
 }

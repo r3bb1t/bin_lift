@@ -1,169 +1,164 @@
-use crate::miscellaneous::ExtendedRegisterEnum;
+use super::Result;
+use crate::lifter::{Error, LifterX86};
 
-use super::{LifterX86, Result};
+use llvmkit::ir::{IntDyn, IntValue};
+use zydis::{ffi::DecodedOperandKind, Instruction, Mnemonic, Operands};
 
-use inkwell::values::IntValue;
-use zydis::{ffi::DecodedOperandKind, Instruction, InstructionAttributes, Mnemonic, Operands};
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    pub(super) fn lift_bswap<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        let dest = operands
+            .first()
+            .ok_or(Error::UnsupportedInstr("bswap missing destination operand"))?;
+        if !matches!(&dest.kind, DecodedOperandKind::Reg(_)) {
+            return Err(Error::UnsupportedInstr(
+                "bswap requires register destination",
+            ));
+        }
+        let value = self.load_single_int_op(dest, dest.size)?;
+        let ty = value.ty();
 
-impl LifterX86<'_> {
-    // NOTE: checked
-    pub(super) fn lift_bswap<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-        let dest = &ops[0];
-
-        let l_value: IntValue<'_> = self.load_single_op(dest, dest.size)?.try_into()?;
-        let l_value_ty = l_value.get_type();
-
-        if dest.size == 16 {
-            let zero = l_value_ty.const_zero();
-            self.store_op(dest, zero)?;
-            return Ok(());
+        match dest.size {
+            16 => return self.store_op(dest, ty.const_zero()),
+            32 | 64 => {}
+            _ => return Err(Error::UnsupportedInstr("unsupported bswap operand size")),
         }
 
-        let mut new_swapped_value = l_value_ty.const_zero();
-        let mut mask = l_value_ty.const_int(0xff, false);
+        let byte_count = u32::from(dest.size / 8);
+        let mut result: IntValue<'ctx, IntDyn> = ty.const_zero().as_value().try_into()?;
 
-        for i in 0..l_value_ty.get_bit_width() / 8 {
-            let byte = builder.build_right_shift(
-                builder.build_and(l_value, mask, "shlresultmsb")?,
-                l_value_ty.const_int((i * 8).into(), false),
-                false,
-                "",
+        for index in 0..byte_count {
+            let source_shift = u64::from(index * 8);
+            let dest_shift = u64::from((byte_count - 1 - index) * 8);
+            let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+                value,
+                ty.const_int_raw(source_shift, false)?,
+                "bswap_src",
             )?;
-            let shift_by = l_value_ty.get_bit_width() - (i + 1) * 8;
-            let new_pos_byte =
-                builder.build_left_shift(byte, l_value_ty.const_int(shift_by.into(), false), "")?;
-
-            new_swapped_value = builder.build_or(new_swapped_value, new_pos_byte, "")?;
-            mask = builder.build_left_shift(mask, mask.get_type().const_int(8, false), "")?;
+            let byte = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+                shifted,
+                ty.const_int_raw(0xff, false)?,
+                "bswap_byte",
+            )?;
+            let positioned = self.builder()?.build_int_shl::<IntDyn, _, _, _>(
+                byte,
+                ty.const_int_raw(dest_shift, false)?,
+                "bswap_dst",
+            )?;
+            result = self
+                .builder()?
+                .build_int_or::<IntDyn, _, _, _>(result, positioned, "bswap")?;
         }
 
-        self.store_op(dest, new_swapped_value)?;
-        Ok(())
+        self.store_op(dest, result)
     }
 
-    // NOTE: checked
-    pub(super) fn lift_mov<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
+    pub(super) fn lift_mov<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
         let operands = instr.operands();
-
-        let dest = &operands[0];
-        let src = &operands[1];
-
-        let dst_size = &dest.size;
-        let s_ext_ty = self.context.custom_width_int_type((*dst_size).into());
-
-        // TODO: In future, double check that we indeed need src.size
-        let r_value: IntValue<'_> = self.load_single_op(src, src.size)?.try_into()?;
-
-        let mut s_ext_rhs = match instr.mnemonic {
-            Mnemonic::MOV => r_value,
-            Mnemonic::MOVSX | Mnemonic::MOVSXD => {
-                let name = if instr.mnemonic == Mnemonic::MOVSXD {
-                    "movsxd_"
-                } else {
-                    "movsx_"
-                };
-                builder.build_int_s_extend(r_value, s_ext_ty, name)?
+        let dest = operands
+            .first()
+            .ok_or(Error::UnsupportedInstr("mov missing destination operand"))?;
+        let src = operands
+            .get(1)
+            .ok_or(Error::UnsupportedInstr("mov missing source operand"))?;
+        match instr.mnemonic {
+            Mnemonic::MOV => {
+                if !matches!(
+                    &dest.kind,
+                    DecodedOperandKind::Reg(_) | DecodedOperandKind::Mem(_)
+                ) {
+                    return Err(Error::UnsupportedInstr(
+                        "mov requires register or memory destination",
+                    ));
+                }
+                if !matches!(
+                    &src.kind,
+                    DecodedOperandKind::Reg(_)
+                        | DecodedOperandKind::Mem(_)
+                        | DecodedOperandKind::Imm(_)
+                ) {
+                    return Err(Error::UnsupportedInstr(
+                        "mov requires register, memory, or immediate source",
+                    ));
+                }
+                if matches!(&dest.kind, DecodedOperandKind::Mem(_))
+                    && matches!(&src.kind, DecodedOperandKind::Mem(_))
+                {
+                    return Err(Error::UnsupportedInstr(
+                        "mov cannot transfer memory to memory",
+                    ));
+                }
             }
-            Mnemonic::MOVZX => builder.build_int_z_extend(r_value, s_ext_ty, "movzx_")?,
-            _ => unreachable!(),
+            Mnemonic::MOVSX | Mnemonic::MOVSXD | Mnemonic::MOVZX => {
+                if !matches!(&dest.kind, DecodedOperandKind::Reg(_)) {
+                    return Err(Error::UnsupportedInstr(
+                        "movsx/movzx require register destination",
+                    ));
+                }
+                if !matches!(
+                    &src.kind,
+                    DecodedOperandKind::Reg(_) | DecodedOperandKind::Mem(_)
+                ) {
+                    return Err(Error::UnsupportedInstr(
+                        "movsx/movzx require register or memory source",
+                    ));
+                }
+            }
+            _ => return Err(Error::UnsupportedInstr("unsupported move instruction")),
+        }
+
+        let src_value = self.load_single_int_op(src, src.size)?;
+        let dest_ty = self.module.custom_width_int_type(u32::from(dest.size))?;
+
+        let value = match instr.mnemonic {
+            Mnemonic::MOV => self.create_z_ext_or_trunc(src_value, dest_ty)?,
+            Mnemonic::MOVSX | Mnemonic::MOVSXD => {
+                if src_value.ty().bit_width() < dest_ty.bit_width() {
+                    self.builder()?
+                        .build_sext_dyn(src_value, dest_ty, "movsx")?
+                } else {
+                    self.create_z_ext_or_trunc(src_value, dest_ty)?
+                }
+            }
+            Mnemonic::MOVZX => self.create_z_ext_or_trunc(src_value, dest_ty)?,
+            _ => return Err(Error::UnsupportedInstr("unsupported move instruction")),
         };
 
-        if let DecodedOperandKind::Imm(_) = &dest.kind {
-            s_ext_rhs = self.load_single_op(dest, *dst_size)?.try_into()?;
-        }
-
-        self.store_op(dest, s_ext_rhs)?;
-
-        Ok(())
+        self.store_op(dest, value)
     }
 
-    pub(super) fn lift_movs_x<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ctx = self.context;
-        let ops = instr.operands();
-        let size = &ops[1].size.clone();
-
-        let mut dst_ptr_value = self.load_single_op(&ops[1], *size)?;
-        self.store_op(&ops[0], dst_ptr_value)?;
-
-        let is_rep = instr.attributes.contains(InstructionAttributes::HAS_REP);
-
-        let df = self.load_flag(ExtendedRegisterEnum::DF)?;
-
-        let byte_size_value: u64 = (*size).into();
-
-        let src_op = if is_rep { &ops[2 + 1] } else { &ops[2] };
-        let dst_op = if is_rep { &ops[3 + 1] } else { &ops[3] };
-
-        let src_op_ty = ctx.custom_width_int_type(src_op.size.into());
-        let direction = builder
-            .build_select(
-                df,
-                src_op_ty.const_int(byte_size_value, false),
-                src_op_ty.const_int(u64::MAX.wrapping_mul(byte_size_value), false),
-                "",
-            )?
-            .into_int_value();
-
-        //let direction = builder
-        //    .build_select(
-        //        df,
-        //        ctx.custom_width_int_type(src_op.size.into())
-        //            .const_int(1 * byte_size_value, false),
-        //        ctx.custom_width_int_type(src_op.size.into())
-        //            //.const_int(u64::MAX * byte_size_value, false),
-        //            .const_int(u64::MAX.wrapping_mul(byte_size_value), false),
-        //        "",
-        //    )?
-        //    .into_int_value();
-
-        let src_value: IntValue<'_> = self.load_single_op(src_op, src_op.size)?.try_into()?;
-        let dst_value: IntValue<'_> = self.load_single_op(dst_op, dst_op.size)?.try_into()?;
-
-        if is_rep {
-            let count_ci: IntValue<'_> = self.load_single_op(&ops[2], ops[2].size)?.try_into()?;
-            debug_assert!(count_ci.is_constant_int(), "fix rep");
-            let mut update_src_value = src_value;
-            let mut update_dst_value = dst_value;
-            let looptime = count_ci.get_zero_extended_constant().unwrap();
-
-            for _ in 0..looptime {
-                dst_ptr_value = self.load_single_op(&ops[1], *size)?;
-                self.store_op(&ops[0], dst_ptr_value)?;
-
-                update_src_value = builder.build_int_add(update_src_value, direction, "")?;
-                update_dst_value = builder.build_int_add(update_dst_value, direction, "")?;
-
-                self.store_op(src_op, update_src_value)?;
-                self.store_op(dst_op, update_dst_value)?;
-            }
-
-            self.store_op(&ops[2], count_ci.get_type().const_zero())?;
+    pub(super) fn lift_xchg<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        let lhs = operands
+            .first()
+            .ok_or(Error::UnsupportedInstr("xchg missing first operand"))?;
+        let rhs = operands
+            .get(1)
+            .ok_or(Error::UnsupportedInstr("xchg missing second operand"))?;
+        let lhs_supported = matches!(
+            &lhs.kind,
+            DecodedOperandKind::Reg(_) | DecodedOperandKind::Mem(_)
+        );
+        let rhs_supported = matches!(
+            &rhs.kind,
+            DecodedOperandKind::Reg(_) | DecodedOperandKind::Mem(_)
+        );
+        let lhs_register = matches!(&lhs.kind, DecodedOperandKind::Reg(_));
+        let rhs_register = matches!(&rhs.kind, DecodedOperandKind::Reg(_));
+        if !lhs_supported || !rhs_supported || (!lhs_register && !rhs_register) {
+            return Err(Error::UnsupportedInstr(
+                "xchg requires one register operand and one register or memory operand",
+            ));
         }
+        if lhs.size != rhs.size {
+            return Err(Error::UnsupportedInstr(
+                "xchg operands must have equal size",
+            ));
+        }
+        let lhs_value = self.load_single_op(lhs, lhs.size)?;
+        let rhs_value = self.load_single_op(rhs, rhs.size)?;
 
-        let update_src_value = builder.build_int_add(src_value, direction, "")?;
-        let update_dst_value = builder.build_int_add(dst_value, direction, "")?;
-
-        self.store_op(src_op, update_src_value)?;
-        self.store_op(dst_op, update_dst_value)?;
-
-        Ok(())
-    }
-
-    pub(super) fn lift_xchg<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let ops = instr.operands();
-        let dst = &ops[0];
-        let src = &ops[1];
-
-        let rhs: IntValue<'_> = self.load_single_op(src, src.size)?.try_into()?;
-        let lhs: IntValue<'_> = self.load_single_op(dst, dst.size)?.try_into()?;
-
-        self.store_op(dst, rhs)?;
-        self.store_op(src, lhs)?;
-
-        Ok(())
+        self.store_op(lhs, rhs_value)?;
+        self.store_op(rhs, lhs_value)
     }
 }

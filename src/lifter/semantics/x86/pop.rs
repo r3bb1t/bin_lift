@@ -1,63 +1,77 @@
-use super::{LifterX86, Result};
+use crate::lifter::{Error, LifterX86};
+use llvmkit::ir::IntDyn;
+use zydis::{ffi::DecodedOperand, Instruction, Mnemonic, Operands};
 
-use inkwell::values::IntValue;
-use zydis::{Instruction, Operands};
+use super::Result;
 
-impl LifterX86<'_> {
-    pub(super) fn lift_pop<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    pub(super) fn lift_pop<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
         let operands = instr.operands();
+        let (dest, stack_src, sp) = match instr.mnemonic {
+            Mnemonic::POP => (
+                operands
+                    .get(0)
+                    .ok_or(Error::UnsupportedInstr("pop without destination"))?,
+                operands
+                    .get(2)
+                    .ok_or(Error::UnsupportedInstr("pop without stack source"))?,
+                operands
+                    .get(1)
+                    .ok_or(Error::UnsupportedInstr("pop without stack pointer"))?,
+            ),
+            Mnemonic::POPFQ => (
+                operands
+                    .get(2)
+                    .ok_or(Error::UnsupportedInstr("popfq without flags destination"))?,
+                operands
+                    .get(1)
+                    .ok_or(Error::UnsupportedInstr("popfq without stack source"))?,
+                operands
+                    .get(0)
+                    .ok_or(Error::UnsupportedInstr("popfq without stack pointer"))?,
+            ),
+            _ => return Err(Error::UnsupportedInstr("unsupported pop instruction")),
+        };
 
-        let dest = &operands[0];
-        let src = &operands[2];
-        let rsp = &operands[1];
-
-        let r_value = self.load_single_op(src, dest.size)?;
-        let rsp_value: IntValue<'_> = self.load_single_op(rsp, rsp.size)?.try_into()?;
-
-        //let val = self
-        //    .context
-        //    .custom_width_int_type(dest.size.into())
-        //    .const_int((dest.size / 8).into(), true);
-
-        let val = self
-            .context
-            .i64_type()
-            .const_int((dest.size / 8).into(), false);
-        let result = self
-            .builder
-            .build_int_add(rsp_value, val, "popping_new_rsp_")?;
-
-        self.store_op(rsp, result)?;
-        self.store_op(dest, r_value)?;
-
-        Ok(())
+        self.pop_stack_value(dest, stack_src, sp)
     }
 
-    pub(super) fn lift_popfq<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
+    pub(super) fn lift_popfq<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        if instr.mnemonic != Mnemonic::POPFQ {
+            return Err(Error::UnsupportedInstr("unsupported popfq instruction"));
+        }
+
         let operands = instr.operands();
+        let dest = operands
+            .get(2)
+            .ok_or(Error::UnsupportedInstr("popfq without flags destination"))?;
+        let stack_src = operands
+            .get(1)
+            .ok_or(Error::UnsupportedInstr("popfq without stack source"))?;
+        let sp = operands
+            .get(0)
+            .ok_or(Error::UnsupportedInstr("popfq without stack pointer"))?;
 
-        let dest = &operands[2];
-        let src = &operands[1];
-        let rsp = &operands[0];
+        self.pop_stack_value(dest, stack_src, sp)
+    }
 
-        let r_value = self.load_single_op(src, dest.size)?;
-        let rsp_value: IntValue<'_> = self.load_single_op(rsp, rsp.size)?.try_into()?;
+    fn pop_stack_value(
+        &mut self,
+        dest: &DecodedOperand,
+        stack_src: &DecodedOperand,
+        sp: &DecodedOperand,
+    ) -> Result<()> {
+        let value = self.load_single_op(stack_src, dest.size)?;
+        let sp_value = self.load_single_int_op(sp, sp.size)?;
+        let next_sp = self.builder()?.build_int_add::<IntDyn, _, _, _>(
+            sp_value,
+            sp_value
+                .ty()
+                .const_int_raw(u64::from(dest.size / 8), false)?,
+            "pop_sp",
+        )?;
 
-        //let val = self
-        //    .context
-        //    // TODO: check this. Different from Mergen
-        //    .custom_width_int_type(dest.size.into())
-        //    .const_int((dest.size / 8).into(), true);
-
-        let val = self
-            .context
-            .i64_type()
-            .const_int((dest.size / 8).into(), false);
-        let result = self.builder.build_int_add(rsp_value, val, "popfq")?;
-
-        self.store_op(dest, r_value)?;
-        self.store_op(rsp, result)?;
-
-        Ok(())
+        self.store_op(sp, next_sp)?;
+        self.store_op(dest, value)
     }
 }

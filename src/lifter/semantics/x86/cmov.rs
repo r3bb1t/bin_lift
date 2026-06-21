@@ -1,239 +1,124 @@
-use crate::miscellaneous::ExtendedRegisterEnum;
+use super::Result;
+use crate::lifter::{Error, LifterX86};
 
-use super::{LifterX86, Result};
+use llvmkit::ir::IntValue;
+use zydis::{ffi::DecodedOperandKind, Instruction, Mnemonic, Operands};
 
-use inkwell::{values::IntValue, IntPredicate};
-use zydis::{ffi::DecodedOperand, Instruction, Operands};
-
-impl<'ctx> LifterX86<'ctx> {
-    pub(super) fn lift_cmovb<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-
-        let condition = builder.build_int_compare(
-            IntPredicate::EQ,
-            cf,
-            cf.get_type().const_int(1, false),
-            "cmvob_condition",
-        )?;
-
-        self.cmov_helper(ops, condition, "cmovb_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovbe<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-
-        let condition = builder.build_or(zf, cf, "cmovbe_condition")?;
-
-        self.cmov_helper(ops, condition, "cmovl_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovl<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-
-        let condition = builder.build_int_compare(
-            IntPredicate::NE,
-            sf,
-            of.get_type().const_int(1, false),
-            "cmovl_condition",
-        )?;
-
-        self.cmov_helper(ops, condition, "cmovl_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovle<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-
-        let sf_neq_of = builder.build_int_compare(IntPredicate::NE, sf, of, "sf_neg_of_cmovle")?;
-        let condition = builder.build_or(zf, sf_neq_of, "cmovnle_condition")?;
-
-        self.cmov_helper(ops, condition, "cmovle_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovnb<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-        let not_cf = builder.build_not(cf, "cmovnb_not_cf")?;
-
-        self.cmov_helper(ops, builder.build_not(not_cf, "")?, "cmovnb_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovnbe<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-
-        let condition = builder.build_and(
-            builder.build_not(cf, "cmovnbe_not_cf")?,
-            builder.build_not(zf, "cmovnbe_not_zf")?,
-            "cmovnbe_condition",
-        )?;
-
-        self.cmov_helper(ops, condition, "cmovl_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovnl<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-
-        let condition = builder.build_int_compare(IntPredicate::EQ, sf, of, "cmovl_compare")?;
-
-        self.cmov_helper(ops, condition, "cmovnl_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovnle<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-
-        let condition = builder.build_and(
-            builder.build_not(zf, "not_zf_cmovnle")?,
-            builder.build_int_compare(IntPredicate::EQ, sf, of, "sf_eq_of")?,
-            "cmovnle_condition",
-        )?;
-
-        self.cmov_helper(ops, condition, "cmovnle_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovno<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let ops = instr.operands();
-        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-
-        self.cmov_helper(ops, of, "cmovno_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovnp<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let ops = instr.operands();
-
-        let pf = self.load_flag(ExtendedRegisterEnum::PF)?;
-        let not_pf = self.builder.build_not(pf, "cmovnp_not_pf")?;
-
-        self.cmov_helper(ops, not_pf, "cmovp_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovns<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-        let condition = builder.build_int_compare(
-            IntPredicate::EQ,
-            sf,
-            sf.get_type().const_zero(),
-            "cmovns_condition",
-        )?;
-
-        self.cmov_helper(ops, condition, "cmovns_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovnz<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-
-        let condition = builder.build_int_compare(
-            IntPredicate::EQ,
-            zf,
-            zf.get_type().const_zero(),
-            "cmovnz_condition",
-        )?;
-
-        self.cmov_helper(ops, condition, "cmovnz_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovo<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let ops = instr.operands();
-
-        let of = self.load_flag(ExtendedRegisterEnum::OF)?;
-
-        self.cmov_helper(ops, of, "cmovo_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovp<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let ops = instr.operands();
-
-        let pf = self.load_flag(ExtendedRegisterEnum::PF)?;
-
-        self.cmov_helper(ops, pf, "cmovp_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovs<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let ops = instr.operands();
-
-        let sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-
-        self.cmov_helper(ops, sf, "cmovp_compare")?;
-        Ok(())
-    }
-
-    pub(super) fn lift_cmovz<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let ops = instr.operands();
-
-        let zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-
-        self.cmov_helper(ops, zf, "cmovp_compare")?;
-        Ok(())
-    }
-
-    /// Get lvalue, rvalue, build select value. Also does the store of op
-    fn cmov_helper(
-        &self,
-        ops: &[DecodedOperand],
-        condition: IntValue<'ctx>,
-        select_text: &'static str,
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    fn lift_cmov_with_condition<O: Operands>(
+        &mut self,
+        instr: &Instruction<O>,
+        condition: IntValue<'ctx, bool>,
     ) -> Result<()> {
-        let dest = &ops[0];
-        let src = &ops[1];
-
+        let operands = instr.operands();
+        let dest = operands
+            .first()
+            .ok_or(Error::UnsupportedInstr("cmov missing destination operand"))?;
+        let src = operands
+            .get(1)
+            .ok_or(Error::UnsupportedInstr("cmov missing source operand"))?;
+        if !matches!(&dest.kind, DecodedOperandKind::Reg(_)) {
+            return Err(Error::UnsupportedInstr(
+                "cmov requires register destination",
+            ));
+        }
+        if !matches!(
+            &src.kind,
+            DecodedOperandKind::Reg(_) | DecodedOperandKind::Mem(_)
+        ) {
+            return Err(Error::UnsupportedInstr(
+                "cmov requires register or memory source",
+            ));
+        }
+        if !matches!(dest.size, 16 | 32 | 64) {
+            return Err(Error::UnsupportedInstr(
+                "cmov requires 16/32/64-bit operands",
+            ));
+        }
         let lhs = self.load_single_int_op(dest, dest.size)?;
         let rhs = self.load_single_int_op(src, dest.size)?;
+        let selected = self.builder()?.build_select(condition, rhs, lhs, "cmov")?;
 
-        let result = self
-            .builder
-            .build_select(condition, rhs, lhs, select_text)?
-            .into_int_value();
+        self.store_op(dest, selected)
+    }
 
-        self.store_op(dest, result)?;
-        Ok(())
+    pub(super) fn lift_cmovb<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVB)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovbe<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVBE)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovl<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVL)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovle<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVLE)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovnb<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVNB)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovnbe<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVNBE)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovnl<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVNL)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovnle<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVNLE)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovno<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVNO)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovnp<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVNP)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovns<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVNS)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovnz<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVNZ)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovo<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVO)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovp<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVP)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovs<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVS)?;
+        self.lift_cmov_with_condition(instr, condition)
+    }
+
+    pub(super) fn lift_cmovz<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let condition = self.condition_for_mnemonic(Mnemonic::CMOVZ)?;
+        self.lift_cmov_with_condition(instr, condition)
     }
 }

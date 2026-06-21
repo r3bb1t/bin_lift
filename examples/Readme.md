@@ -36,5 +36,4 @@ __int64 __fastcall add(int a, int b, int c)
 ```
 
 
-You need to edit output to be able to compile it. 
-https://godbolt.org/z/rv1YhsYjM
+Examples print verified textual LLVM IR. Native optimization or object output is outside the core migration.

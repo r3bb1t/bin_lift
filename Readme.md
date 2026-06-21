@@ -9,6 +9,5 @@ purpose. It allows you to convert raw binary data to LLVM IR (Intermediate repre
 
 # Dependencies
 
-Tested on Ubuntu 24
-
-- LLVM 18
+Core IR generation is pure Rust plus Zydis and the sibling `llvmkit` crate.
+LLVM command-line tools are only needed for optional external post-processing of the emitted `.ll`, not for lifting or verification.

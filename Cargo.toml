@@ -9,6 +9,6 @@ name = "zydis2llvmir"
 path = "src/lib.rs"
 
 [dependencies]
-inkwell = { version = "0.5.0", features = ["llvm18-0", "llvm18-0-prefer-static"]}
+llvmkit = { version = "0.0.2", path = "../rllvm/llvmkit" }
 thiserror = "2"
 zydis = { version = "4.1.1", features = ["default"] }

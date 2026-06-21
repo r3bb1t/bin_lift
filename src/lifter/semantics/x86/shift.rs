@@ -1,754 +1,609 @@
-use super::{LifterX86, Result};
+use super::Result;
+use crate::lifter::{Error, LifterX86};
 use crate::miscellaneous::ExtendedRegisterEnum;
 
-use inkwell::{values::IntValue, IntPredicate};
+use llvmkit::ir::{IntDyn, IntType, IntValue};
 use zydis::{Instruction, Mnemonic, Operands};
 
-impl LifterX86<'_> {
-    //pub(super) fn lift_sar<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-    //    let builder = &self.builder;
-    //    let ops = instr.operands();
-    //
-    //    let [l_value, count_value] = self.load_two_first_ints(ops)?;
-    //    let l_value_ty = l_value.get_type();
-    //    let count_value_ty = count_value.get_type();
-    //
-    //    let zero = count_value.get_type().const_zero();
-    //    let bit_width: u64 = l_value_ty.get_bit_width().into();
-    //    let mask_c: u64 = if bit_width == 64 { 0x3f } else { 0x1f };
-    //
-    //    let clamped_count =
-    //        builder.build_and(count_value, count_value_ty.const_int(mask_c, false), "")?;
-    //
-    //    let mut result = builder.build_right_shift(l_value, clamped_count, false, "")?;
-    //    let is_zeroed = builder.build_int_compare(
-    //        IntPredicate::ULT,
-    //        clamped_count,
-    //        clamped_count.get_type().const_int(bit_width - 1, false),
-    //        "",
-    //    )?;
-    //
-    //    result = builder
-    //        .build_select(is_zeroed, zero, result, "aaa")?
-    //        .into_int_value();
-    //
-    //    let cf_r_value = builder.build_int_sub(
-    //        clamped_count,
-    //        clamped_count.get_type().const_int(1, false),
-    //        "",
-    //    )?;
-    //    let cf_shl =
-    //        builder.build_left_shift(cf_r_value.get_type().const_int(1, false), cf_r_value, "")?;
-    //    let cf_and = builder.build_and(cf_shl, l_value, "")?;
-    //    let mut cf_value = builder.build_int_compare(
-    //        IntPredicate::NE,
-    //        cf_and,
-    //        cf_and.get_type().const_zero(),
-    //        "",
-    //    )?;
-    //
-    //    let is_count_one = builder.build_int_compare(
-    //        IntPredicate::EQ,
-    //        clamped_count,
-    //        clamped_count.get_type().const_int(1, false),
-    //        "",
-    //    )?;
-    //
-    //    let int_1_ty = self.context.custom_width_int_type(1);
-    //    let of = builder
-    //        .build_select(
-    //            is_count_one,
-    //            int_1_ty.const_int(1, false),
-    //            self.load_flag(ExtendedRegister::OF)?,
-    //            "bbb",
-    //        )?
-    //        .into_int_value();
-    //
-    //    let is_not_zero = builder.build_int_compare(IntPredicate::NE, clamped_count, zero, "")?;
-    //    let old_cf = self.load_flag(ExtendedRegister::CF)?;
-    //    cf_value = builder
-    //        .build_select(
-    //            is_not_zero,
-    //            cf_value,
-    //            self.create_z_ext_or_trunc(old_cf, int_1_ty)?,
-    //            "ccc",
-    //        )?
-    //        .into_int_value();
-    //    cf_value = builder
-    //        .build_select(
-    //            is_zeroed,
-    //            builder.build_int_truncate(zero, int_1_ty, "ddd")?,
-    //            cf_value,
-    //            "",
-    //        )?
-    //        .into_int_value();
-    //
-    //    let sf = builder
-    //        .build_select(
-    //            is_not_zero,
-    //            self.compute_sign_flag(result)?,
-    //            self.load_flag(ExtendedRegister::SF)?,
-    //            "eee",
-    //        )?
-    //        .into_int_value();
-    //
-    //    let zf = builder
-    //        .build_select(
-    //            is_not_zero,
-    //            self.compute_zero_flag(result)?,
-    //            self.load_flag(ExtendedRegister::ZF)?,
-    //            "fff",
-    //        )?
-    //        .into_int_value();
-    //
-    //    let pf = builder
-    //        .build_select(
-    //            is_not_zero,
-    //            self.compute_parity_flag(result)?,
-    //            self.load_flag(ExtendedRegister::PF)?,
-    //            "",
-    //        )?
-    //        .into_int_value();
-    //
-    //    self.store_cpu_flag(ExtendedRegister::CF, cf_value);
-    //    self.store_cpu_flag(ExtendedRegister::OF, of);
-    //    self.store_cpu_flag(ExtendedRegister::SF, sf);
-    //    self.store_cpu_flag(ExtendedRegister::ZF, zf);
-    //    self.store_cpu_flag(ExtendedRegister::PF, pf);
-    //
-    //    self.store_op(&ops[0], result)?;
-    //    Ok(())
-    //}
+struct ShiftLegacyCount<'ctx> {
+    count: IntValue<'ctx, IntDyn>,
+    shift_count: IntValue<'ctx, IntDyn>,
+    count_nonzero: IntValue<'ctx, bool>,
+    count_is_one: IntValue<'ctx, bool>,
+    too_large: IntValue<'ctx, bool>,
+}
 
-    // NOTE: reimplemented and checked
-    pub(super) fn lift_sar<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let int_1_ty = self.context.bool_type();
-        let ops = instr.operands();
+struct ShiftBmiCount<'ctx> {
+    shift_count: IntValue<'ctx, IntDyn>,
+}
 
-        let [dest, count] = match instr.mnemonic {
-            Mnemonic::SAR => [&ops[0], &ops[1]],
-            Mnemonic::SARX => [&ops[1], &ops[2]],
-            _ => unreachable!(),
+struct ShiftDoubleCount<'ctx> {
+    safe_count: IntValue<'ctx, IntDyn>,
+    count_nonzero: IntValue<'ctx, bool>,
+    count_is_one: IntValue<'ctx, bool>,
+}
+
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    pub(super) fn lift_sar<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        let (dest, value_op, count_op, updates_flags) = match instr.mnemonic {
+            Mnemonic::SAR => (&operands[0], &operands[0], &operands[1], true),
+            Mnemonic::SARX => (&operands[0], &operands[1], &operands[2], false),
+            _ => {
+                return Err(Error::UnsupportedInstr(
+                    "unsupported arithmetic shift instruction",
+                ))
+            }
         };
 
-        let l_value = IntValue::try_from(self.load_single_op(dest, dest.size)?)?;
-        let count_value = IntValue::try_from(self.load_single_op(count, dest.size)?)?;
+        let value = self.load_single_int_op(value_op, dest.size)?;
+        let count = self.load_single_int_op(count_op, dest.size)?;
+        let result = if updates_flags {
+            let info = self.shift_legacy_count_info(value, count)?;
+            let result = self.builder()?.build_int_ashr::<IntDyn, _, _, _>(
+                value,
+                info.shift_count,
+                "sar",
+            )?;
 
-        let l_value_ty = l_value.get_type();
-        let count_value_ty = count_value.get_type();
-
-        let bit_width: u64 = l_value_ty.get_bit_width().into();
-        let mask_c: u64 = if bit_width == 64 { 0x3f } else { 0x1f };
-
-        let mut clamped_count = builder.build_and(
-            count_value,
-            count_value_ty.const_int(mask_c, false),
-            "sarclamp",
-        )?;
-        let clamped_count_ty = clamped_count.get_type();
-
-        let zero = clamped_count_ty.const_zero();
-        let max_shift = clamped_count_ty.const_int(bit_width - 1, false);
-
-        let is_zeroed =
-            builder.build_int_compare(IntPredicate::UGT, clamped_count, max_shift, "")?;
-
-        clamped_count = builder
-            .build_select(is_zeroed, max_shift, clamped_count, "")?
-            .into_int_value();
-
-        let result = builder.build_right_shift(l_value, clamped_count, false, "")?;
-
-        let last_shift = builder.build_right_shift(
-            l_value,
-            builder.build_int_sub(clamped_count, clamped_count_ty.const_int(1, false), "")?,
-            false,
-            "",
-        )?;
-
-        let mut cf_value = builder.build_int_truncate(last_shift, int_1_ty, "")?;
-        let is_count_zero = builder.build_int_compare(
-            IntPredicate::EQ,
-            clamped_count,
-            clamped_count_ty.const_zero(),
-            "",
-        )?;
-
-        let ol_cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-
-        cf_value = builder
-            .build_select(is_count_zero, ol_cf, cf_value, "cf_value")?
-            .into_int_value();
-
-        let of = int_1_ty.const_zero();
-
-        let is_not_zero = builder.build_int_compare(IntPredicate::NE, clamped_count, zero, "")?;
-        let old_sf = self.load_flag(ExtendedRegisterEnum::SF)?;
-        let old_zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-        let old_pf = self.load_flag(ExtendedRegisterEnum::PF)?;
-
-        if instr.mnemonic != Mnemonic::SARX {
-            let pf = builder
-                .build_select(is_not_zero, self.compute_parity_flag(result)?, old_pf, "")?
-                .into_int_value();
-            let sf = builder
-                .build_select(is_not_zero, self.compute_sign_flag(result)?, old_sf, "")?
-                .into_int_value();
-            let zf = builder
-                .build_select(is_not_zero, self.compute_zero_flag(result)?, old_zf, "")?
-                .into_int_value();
-
-            self.store_cpu_flag(ExtendedRegisterEnum::CF, cf_value);
-            self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
-            self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
-            self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
-            self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
-        }
-
-        self.store_op(dest, result)?;
-        Ok(())
-    }
-
-    // NOTE: Checked
-    // TODO: Mergen might be fixed due to not read variables, so in future, check
-    pub(super) fn lift_shl<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let int_1_ty = self.context.custom_width_int_type(1);
-
-        let [dest, count] = match instr.mnemonic {
-            Mnemonic::SHL => [&ops[0], &ops[1]],
-            Mnemonic::SHLX => [&ops[1], &ops[2]],
-            _ => unreachable!(),
-        };
-
-        let l_value = IntValue::try_from(self.load_single_op(dest, dest.size)?)?;
-        let count_value = IntValue::try_from(self.load_single_op(count, dest.size)?)?;
-
-        //let [l_value, count_value] = self.load_two_first_ints(ops)?;
-        let l_value_ty = l_value.get_type();
-
-        let count_value_ty = count_value.get_type();
-        let bit_width: u64 = l_value_ty.get_bit_width().into();
-        let mask_c: u64 = if bit_width == 64 { 0x3f } else { 0x1f };
-
-        let bit_width_value = count_value_ty.const_int(bit_width, false);
-
-        let clamped_count_value = builder.build_and(
-            count_value,
-            count_value_ty.const_int(mask_c, false),
-            "shlclamp",
-        )?;
-
-        let mut result = builder.build_left_shift(l_value, clamped_count_value, "shl-shift")?;
-        let zero = count_value_ty.const_zero();
-        let is_zeroed = builder.build_int_compare(
-            IntPredicate::UGT,
-            clamped_count_value,
-            clamped_count_value
-                .get_type()
-                .const_int(bit_width - 1, false),
-            "",
-        )?;
-
-        result = builder
-            .build_select(is_zeroed, zero, result, "")?
-            .into_int_value();
-
-        let mut cf_value = builder.build_right_shift(
-            l_value,
-            builder.build_int_sub(bit_width_value, clamped_count_value, "")?,
-            false,
-            "",
-        )?;
-        let one = cf_value.get_type().const_int(1, false);
-
-        cf_value = builder.build_and(cf_value, one, "shlcf")?;
-        cf_value = self.create_z_ext_or_trunc(cf_value, int_1_ty)?;
-
-        let count_is_not_zero = builder.build_int_compare(
-            IntPredicate::NE,
-            clamped_count_value,
-            clamped_count_value.get_type().const_zero(),
-            "",
-        )?;
-
-        let cf_rvalue = builder.build_int_sub(
-            clamped_count_value,
-            clamped_count_value.get_type().const_int(1, false),
-            "",
-        )?;
-        let cf_shl = builder.build_left_shift(l_value, cf_rvalue, "")?;
-        let cf_int_t = cf_shl.get_type();
-        let cf_right_count = cf_int_t.const_int((cf_int_t.get_bit_width() - 1).into(), false);
-        let cf_low = builder.build_left_shift(cf_shl, cf_right_count, "")?;
-        cf_value = builder
-            .build_select(
-                count_is_not_zero,
-                self.create_z_ext_or_trunc(cf_low, int_1_ty)?,
+            let bit_width = value.ty().bit_width();
+            let cf_count = self.shift_legacy_cf_count(&info, bit_width)?;
+            let cf_pos = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+                cf_count,
+                cf_count.ty().const_int_raw(1, false)?,
+                "sar_cf_pos",
+            )?;
+            let cf_new = self.shift_low_bit_after_lshr(value, cf_pos)?;
+            let cf = self.builder()?.build_select(
+                info.count_nonzero,
+                cf_new,
                 self.load_flag(ExtendedRegisterEnum::CF)?,
-                "",
-            )?
-            .into_int_value();
-
-        cf_value = builder
-            .build_select(
-                is_zeroed,
-                self.create_z_ext_or_trunc(zero, int_1_ty)?,
-                cf_value,
-                "",
-            )?
-            .into_int_value();
-
-        let is_count_one = builder.build_int_compare(
-            IntPredicate::EQ,
-            clamped_count_value,
-            clamped_count_value.get_type().const_int(1, false),
-            "",
-        )?;
-
-        let mut original_msb = builder.build_right_shift(
-            l_value,
-            l_value_ty.const_int(bit_width - 1, false),
-            false,
-            "",
-        )?;
-        original_msb =
-            builder.build_and(original_msb, l_value.get_type().const_int(1, false), "")?;
-        original_msb = self.create_z_ext_or_trunc(original_msb, int_1_ty)?;
-
-        let cf_as_msb = self.create_z_ext_or_trunc(
-            builder.build_right_shift(
-                l_value,
-                l_value_ty.const_int(bit_width - 1, false),
-                false,
-                "",
-            )?,
-            int_1_ty,
-        )?;
-
-        let result_msb = self.create_z_ext_or_trunc(
-            builder.build_right_shift(
-                result,
-                result.get_type().const_int(bit_width - 1, false),
-                false,
-                "",
-            )?,
-            int_1_ty,
-        )?;
-
-        let of_value = builder
-            .build_select(
-                is_count_one,
-                builder.build_xor(result_msb, cf_as_msb, "")?,
+                "sar_cf",
+            )?;
+            let of = self.builder()?.build_select(
+                info.count_is_one,
+                self.shift_bool_value(false)?,
                 self.load_flag(ExtendedRegisterEnum::OF)?,
-                "",
-            )?
-            .into_int_value();
+                "sar_of",
+            )?;
 
-        // TODO: re-check
-        if instr.mnemonic != Mnemonic::SHLX {
-            self.store_cpu_flag(ExtendedRegisterEnum::CF, cf_value);
-            self.store_cpu_flag(ExtendedRegisterEnum::OF, of_value);
-
-            let sf = builder
-                .build_select(
-                    count_is_not_zero,
-                    self.compute_sign_flag(result)?,
-                    self.load_flag(ExtendedRegisterEnum::SF)?,
-                    "",
-                )?
-                .into_int_value();
-
-            self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
-            // TODO: in mergen its lazy flag
-            let old_zf = self.load_flag(ExtendedRegisterEnum::ZF)?;
-            let zf = builder
-                .build_select(
-                    count_is_not_zero,
-                    self.compute_zero_flag(result)?,
-                    old_zf,
-                    "",
-                )?
-                .into_int_value();
-
-            let old_pf = self.load_flag(ExtendedRegisterEnum::PF)?;
-            let pf = builder
-                .build_select(
-                    count_is_not_zero,
-                    self.compute_parity_flag(result)?,
-                    old_pf,
-                    "",
-                )?
-                .into_int_value();
-
-            self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
-            self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
-        }
-        self.store_op(dest, result)?;
-
-        Ok(())
-    }
-
-    // NOTE: checked
-    pub(super) fn lift_shld<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let dest = &ops[0];
-        let source = &ops[1];
-        let count = &ops[2];
-
-        let l_value = IntValue::try_from(self.load_single_op(dest, dest.size)?)?;
-        let source_value = IntValue::try_from(self.load_single_op(source, dest.size)?)?;
-        let count_value = IntValue::try_from(self.load_single_op(count, dest.size)?)?;
-
-        //let [l_value, count_value] = self.load_two_first_ints(ops)?;
-        let l_value_ty = l_value.get_type();
-        let count_value_ty = count_value.get_type();
-
-        let bit_width = l_value_ty.get_bit_width().into();
-        let effective_count_value = builder.build_int_unsigned_rem(
-            count_value,
-            count_value_ty.const_int(bit_width, false),
-            "",
-        )?;
-        let effective_count_value_ty = effective_count_value.get_type();
-
-        let shifted_dest =
-            builder.build_left_shift(l_value, effective_count_value, "shiftedDest")?;
-        let complement_count = builder.build_int_sub(
-            count_value_ty.const_int(bit_width, false),
-            effective_count_value,
-            "complementCount",
-        )?;
-
-        let shifted_source =
-            builder.build_right_shift(source_value, complement_count, false, "shiftedSource")?;
-
-        let mut result_value = builder.build_or(shifted_dest, shifted_source, "shldResult")?;
-
-        let count_is_not_zero = builder.build_int_compare(
-            IntPredicate::NE,
-            effective_count_value,
-            effective_count_value_ty.const_zero(),
-            "",
-        )?;
-
-        let last_shifted_bit_position = builder.build_int_sub(
-            effective_count_value,
-            effective_count_value_ty.const_int(1, false),
-            "",
-        )?;
-
-        let last_shifted_bit = builder.build_and(
-            builder.build_right_shift(l_value, last_shifted_bit_position, false, "")?,
-            l_value_ty.const_int(1, false),
-            "",
-        )?;
-
-        let cf = builder
-            .build_select(
-                count_is_not_zero,
-                self.create_z_ext_or_trunc(last_shifted_bit, self.context.bool_type())?,
-                self.load_flag(ExtendedRegisterEnum::CF)?,
-                "",
-            )?
-            .into_int_value();
-
-        result_value = builder
-            .build_select(count_is_not_zero, result_value, l_value, "")?
-            .into_int_value();
-
-        let is_one = builder.build_int_compare(
-            IntPredicate::EQ,
-            effective_count_value,
-            effective_count_value_ty.const_int(1, false),
-            "",
-        )?;
-
-        let new_of = builder.build_xor(
-            builder.build_right_shift(
-                l_value,
-                l_value_ty.const_int(bit_width - 1, false),
-                false,
-                "sub_of",
-            )?,
-            builder.build_right_shift(
-                result_value,
-                result_value.get_type().const_int(bit_width - 1, false),
-                false,
-                "",
-            )?,
-            "",
-        )?;
-
-        let of = builder
-            .build_select(
-                is_one,
-                self.create_z_ext_or_trunc(new_of, self.context.bool_type())?,
-                self.load_flag(ExtendedRegisterEnum::OF)?,
-                "",
-            )?
-            .into_int_value();
-
-        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
-        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
-
-        self.store_cpu_flag(
-            ExtendedRegisterEnum::SF,
-            self.compute_sign_flag(result_value)?,
-        );
-        self.store_cpu_flag(
-            ExtendedRegisterEnum::ZF,
-            self.compute_zero_flag(result_value)?,
-        );
-        self.store_cpu_flag(
-            ExtendedRegisterEnum::PF,
-            self.compute_parity_flag(result_value)?,
-        );
-
-        self.store_op(dest, result_value)?;
-
-        Ok(())
-    }
-
-    // NOTE: checked
-    pub(super) fn lift_shr<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let mnemonic = &instr.mnemonic;
-
-        let [dest, count] = match mnemonic {
-            Mnemonic::SHR => [&ops[0], &ops[1]],
-            Mnemonic::SHRX => [&ops[1], &ops[2]],
-            _ => unreachable!(),
+            self.store_cpu_flag(ExtendedRegisterEnum::CF, cf)?;
+            self.store_cpu_flag(ExtendedRegisterEnum::OF, of)?;
+            self.shift_store_status_flags(result, info.count_nonzero)?;
+            result
+        } else {
+            let info = self.shift_bmi_count_info(value, count)?;
+            self.builder()?
+                .build_int_ashr::<IntDyn, _, _, _>(value, info.shift_count, "sarx")?
         };
 
-        let l_value = IntValue::try_from(self.load_single_op(dest, dest.size)?)?;
-        let count_value = IntValue::try_from(self.load_single_op(count, dest.size)?)?;
-
-        let l_value_ty = l_value.get_type();
-        let count_value_ty = count_value.get_type();
-
-        let bit_width: u64 = l_value_ty.get_bit_width().into();
-        let mask_c: u64 = if bit_width == 64 { 0x3f } else { 0x1f };
-
-        let clamped_count =
-            builder.build_and(count_value, count_value_ty.const_int(mask_c, false), "")?;
-        let mut result = builder.build_right_shift(l_value, clamped_count, false, "")?;
-        let zero = count_value_ty.const_zero();
-        let is_zeroed = builder.build_int_compare(
-            IntPredicate::UGT,
-            clamped_count,
-            clamped_count.get_type().const_int(bit_width - 1, false),
-            "",
-        )?;
-
-        result = builder
-            .build_select(is_zeroed, zero, result, "")?
-            .into_int_value();
-
-        let mut cf_value = builder.build_int_truncate(
-            builder.build_right_shift(
-                l_value,
-                builder.build_int_sub(
-                    clamped_count,
-                    clamped_count.get_type().const_int(1, false),
-                    "",
-                )?,
-                false,
-                "",
-            )?,
-            self.context.bool_type(),
-            "",
-        )?;
-
-        let is_count_one = builder.build_int_compare(
-            IntPredicate::EQ,
-            clamped_count,
-            clamped_count.get_type().const_int(1, false),
-            "",
-        )?;
-
-        let mut of =
-            builder.build_int_compare(IntPredicate::EQ, l_value, l_value_ty.const_zero(), "")?;
-
-        of = builder
-            .build_select(
-                is_count_one,
-                of,
-                self.load_flag(ExtendedRegisterEnum::OF)?,
-                "",
-            )?
-            .into_int_value();
-
-        let is_not_zero = builder.build_int_compare(IntPredicate::NE, clamped_count, zero, "")?;
-        let old_cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-
-        cf_value = builder
-            .build_select(is_not_zero, cf_value, old_cf, "cf_value_1_")?
-            .into_int_value();
-
-        cf_value = builder
-            .build_select(
-                is_zeroed,
-                builder.build_int_truncate(zero, self.context.bool_type(), "")?,
-                cf_value,
-                "",
-            )?
-            .into_int_value();
-
-        let sf = builder
-            .build_select(
-                is_not_zero,
-                self.compute_sign_flag(result)?,
-                self.load_flag(ExtendedRegisterEnum::SF)?,
-                "",
-            )?
-            .into_int_value();
-
-        let zf = builder
-            .build_select(
-                is_not_zero,
-                self.compute_zero_flag(result)?,
-                self.load_flag(ExtendedRegisterEnum::ZF)?,
-                "",
-            )?
-            .into_int_value();
-
-        let pf = builder
-            .build_select(
-                is_not_zero,
-                self.compute_parity_flag(result)?,
-                self.load_flag(ExtendedRegisterEnum::PF)?,
-                "",
-            )?
-            .into_int_value();
-
-        if mnemonic != &Mnemonic::SHRX {
-            self.store_cpu_flag(ExtendedRegisterEnum::CF, cf_value);
-            self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
-            self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
-            self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
-            self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
-        }
-        self.store_op(dest, result)?;
-
-        Ok(())
+        self.store_op(dest, result)
     }
 
-    // NOTE: checked
-    pub(super) fn lift_shrd<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
+    pub(super) fn lift_shl<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        let (dest, value_op, count_op, updates_flags) = match instr.mnemonic {
+            Mnemonic::SHL => (&operands[0], &operands[0], &operands[1], true),
+            Mnemonic::SHLX => (&operands[0], &operands[1], &operands[2], false),
+            _ => {
+                return Err(Error::UnsupportedInstr(
+                    "unsupported left shift instruction",
+                ))
+            }
+        };
 
-        let int_1_ty = self.context.bool_type();
+        let value = self.load_single_int_op(value_op, dest.size)?;
+        let count = self.load_single_int_op(count_op, dest.size)?;
+        let result = if updates_flags {
+            let info = self.shift_legacy_count_info(value, count)?;
+            let shifted =
+                self.builder()?
+                    .build_int_shl::<IntDyn, _, _, _>(value, info.shift_count, "shl")?;
+            let zero_value: IntValue<'ctx, IntDyn> =
+                value.ty().const_zero().as_value().try_into()?;
+            let result =
+                self.builder()?
+                    .build_select(info.too_large, zero_value, shifted, "shl_result")?;
 
-        let dest = &ops[0];
-        let source = &ops[1];
-        let count = &ops[2];
+            let bit_width = value.ty().bit_width();
+            let cf_count = self.shift_legacy_cf_count(&info, bit_width)?;
+            let width_value = self.shift_const_value(value.ty(), u64::from(bit_width))?;
+            let cf_pos = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+                width_value,
+                cf_count,
+                "shl_cf_pos",
+            )?;
+            let cf_new = self.shift_low_bit_after_lshr(value, cf_pos)?;
+            let cf_if_shifted = self.builder()?.build_select(
+                info.count_nonzero,
+                cf_new,
+                self.load_flag(ExtendedRegisterEnum::CF)?,
+                "shl_cf_shifted",
+            )?;
+            let cf = self.builder()?.build_select(
+                info.too_large,
+                self.shift_bool_value(false)?,
+                cf_if_shifted,
+                "shl_cf",
+            )?;
+            let of_one = self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+                self.shift_msb_flag(result)?,
+                cf_new,
+                "shl_of_one",
+            )?;
+            let of = self.builder()?.build_select(
+                info.count_is_one,
+                of_one,
+                self.load_flag(ExtendedRegisterEnum::OF)?,
+                "shl_of",
+            )?;
 
-        let l_value = IntValue::try_from(self.load_single_op(dest, dest.size)?)?;
-        let source_value = IntValue::try_from(self.load_single_op(source, dest.size)?)?;
-        let count_value = IntValue::try_from(self.load_single_op(count, dest.size)?)?;
+            self.store_cpu_flag(ExtendedRegisterEnum::CF, cf)?;
+            self.store_cpu_flag(ExtendedRegisterEnum::OF, of)?;
+            self.shift_store_status_flags(result, info.count_nonzero)?;
+            result
+        } else {
+            let info = self.shift_bmi_count_info(value, count)?;
+            self.builder()?
+                .build_int_shl::<IntDyn, _, _, _>(value, info.shift_count, "shlx")?
+        };
 
-        let l_value_ty = l_value.get_type();
-        let count_value_ty = count_value.get_type();
+        self.store_op(dest, result)
+    }
 
-        let bit_width = l_value_ty.get_bit_width().into();
-        let effective_count_value = builder.build_int_unsigned_rem(
-            count_value,
-            count_value_ty.const_int(bit_width, false),
-            "effectiveShiftCount",
+    pub(super) fn lift_shld<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        if instr.mnemonic != Mnemonic::SHLD {
+            return Err(Error::UnsupportedInstr(
+                "unsupported double-left shift instruction",
+            ));
+        }
+        let dest = &operands[0];
+        let source = &operands[1];
+        let count = &operands[2];
+        let value = self.load_single_int_op(dest, dest.size)?;
+        let source_value = self.load_single_int_op(source, dest.size)?;
+        let count_value = self.load_single_int_op(count, dest.size)?;
+        let info = self.shift_double_count_info(value, count_value)?;
+        let bit_width = value.ty().bit_width();
+        let width_value = self.shift_const_value(value.ty(), u64::from(bit_width))?;
+        let complement = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+            width_value,
+            info.safe_count,
+            "shld_complement",
         )?;
-        let effective_count_value_ty = effective_count_value.get_type();
 
-        let shifted_dest =
-            builder.build_right_shift(l_value, effective_count_value, false, "shiftedDest")?;
-        let complement_count = builder.build_int_sub(
-            count_value_ty.const_int(bit_width, false),
-            effective_count_value,
-            "complementCount",
+        let shifted_dest = self.builder()?.build_int_shl::<IntDyn, _, _, _>(
+            value,
+            info.safe_count,
+            "shld_dest",
+        )?;
+        let shifted_source = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            source_value,
+            complement,
+            "shld_source",
+        )?;
+        let combined = self.builder()?.build_int_or::<IntDyn, _, _, _>(
+            shifted_dest,
+            shifted_source,
+            "shld_combined",
+        )?;
+        let result =
+            self.builder()?
+                .build_select(info.count_nonzero, combined, value, "shld_result")?;
+
+        let cf_pos = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+            width_value,
+            info.safe_count,
+            "shld_cf_pos",
+        )?;
+        let cf_new = self.shift_low_bit_after_lshr(value, cf_pos)?;
+        let cf = self.builder()?.build_select(
+            info.count_nonzero,
+            cf_new,
+            self.load_flag(ExtendedRegisterEnum::CF)?,
+            "shld_cf",
+        )?;
+        let of_new = self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+            self.shift_msb_flag(value)?,
+            self.shift_msb_flag(result)?,
+            "shld_of_new",
+        )?;
+        let of = self.builder()?.build_select(
+            info.count_is_one,
+            of_new,
+            self.load_flag(ExtendedRegisterEnum::OF)?,
+            "shld_of",
         )?;
 
-        let shifted_source =
-            builder.build_left_shift(source_value, complement_count, "shiftedSource")?;
-        let result_value = builder.build_or(shifted_dest, shifted_source, "shrdResult")?;
-        let result_value_ty = result_value.get_type();
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of)?;
+        self.shift_store_status_flags(result, info.count_nonzero)?;
+        self.store_op(dest, result)
+    }
 
-        let cf_bit_position = builder.build_int_sub(
-            effective_count_value,
-            effective_count_value_ty.const_int(1, false),
-            "",
-        )?;
-        let mut cf = builder.build_right_shift(l_value, cf_bit_position, false, "")?;
-        cf = builder.build_and(cf, cf.get_type().const_int(1, false), "")?;
-        cf = self.create_z_ext_or_trunc(cf, self.context.bool_type())?;
+    pub(super) fn lift_shr<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        let (dest, value_op, count_op, updates_flags) = match instr.mnemonic {
+            Mnemonic::SHR => (&operands[0], &operands[0], &operands[1], true),
+            Mnemonic::SHRX => (&operands[0], &operands[1], &operands[2], false),
+            _ => {
+                return Err(Error::UnsupportedInstr(
+                    "unsupported right shift instruction",
+                ))
+            }
+        };
 
-        let is_count_one = builder.build_int_compare(
-            IntPredicate::EQ,
-            effective_count_value,
-            effective_count_value_ty.const_int(1, false),
-            "",
-        )?;
-        let mut most_significant_bits_of_dest = builder.build_right_shift(
-            l_value,
-            l_value_ty.const_int(bit_width - 1, false),
-            false,
-            "name",
-        )?;
-        let most_significant_bits_of_dest_ty = most_significant_bits_of_dest.get_type();
-        most_significant_bits_of_dest = builder.build_and(
-            most_significant_bits_of_dest,
-            most_significant_bits_of_dest_ty.const_int(1, false),
-            "shrdmsb2",
-        )?;
-        let mut most_significant_bits_of_result = builder.build_right_shift(
-            result_value,
-            result_value_ty.const_int(bit_width - 1, false),
-            false,
-            "shlmsbresult",
-        )?;
-        let most_significant_bits_of_result_ty = most_significant_bits_of_result.get_type();
-        most_significant_bits_of_result = builder.build_and(
-            most_significant_bits_of_result,
-            most_significant_bits_of_result_ty.const_int(1, false),
-            "shrdmsb2",
+        let value = self.load_single_int_op(value_op, dest.size)?;
+        let count = self.load_single_int_op(count_op, dest.size)?;
+        let result = if updates_flags {
+            let info = self.shift_legacy_count_info(value, count)?;
+            let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+                value,
+                info.shift_count,
+                "shr",
+            )?;
+            let zero_value: IntValue<'ctx, IntDyn> =
+                value.ty().const_zero().as_value().try_into()?;
+            let result =
+                self.builder()?
+                    .build_select(info.too_large, zero_value, shifted, "shr_result")?;
+
+            let bit_width = value.ty().bit_width();
+            let cf_count = self.shift_legacy_cf_count(&info, bit_width)?;
+            let cf_pos = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+                cf_count,
+                cf_count.ty().const_int_raw(1, false)?,
+                "shr_cf_pos",
+            )?;
+            let cf_new = self.shift_low_bit_after_lshr(value, cf_pos)?;
+            let cf_if_shifted = self.builder()?.build_select(
+                info.count_nonzero,
+                cf_new,
+                self.load_flag(ExtendedRegisterEnum::CF)?,
+                "shr_cf_shifted",
+            )?;
+            let cf = self.builder()?.build_select(
+                info.too_large,
+                self.shift_bool_value(false)?,
+                cf_if_shifted,
+                "shr_cf",
+            )?;
+            let of = self.builder()?.build_select(
+                info.count_is_one,
+                self.shift_msb_flag(value)?,
+                self.load_flag(ExtendedRegisterEnum::OF)?,
+                "shr_of",
+            )?;
+
+            self.store_cpu_flag(ExtendedRegisterEnum::CF, cf)?;
+            self.store_cpu_flag(ExtendedRegisterEnum::OF, of)?;
+            self.shift_store_status_flags(result, info.count_nonzero)?;
+            result
+        } else {
+            let info = self.shift_bmi_count_info(value, count)?;
+            self.builder()?
+                .build_int_lshr::<IntDyn, _, _, _>(value, info.shift_count, "shrx")?
+        };
+
+        self.store_op(dest, result)
+    }
+
+    pub(super) fn lift_shrd<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        if instr.mnemonic != Mnemonic::SHRD {
+            return Err(Error::UnsupportedInstr(
+                "unsupported double-right shift instruction",
+            ));
+        }
+        let dest = &operands[0];
+        let source = &operands[1];
+        let count = &operands[2];
+        let value = self.load_single_int_op(dest, dest.size)?;
+        let source_value = self.load_single_int_op(source, dest.size)?;
+        let count_value = self.load_single_int_op(count, dest.size)?;
+        let info = self.shift_double_count_info(value, count_value)?;
+        let bit_width = value.ty().bit_width();
+        let width_value = self.shift_const_value(value.ty(), u64::from(bit_width))?;
+        let complement = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+            width_value,
+            info.safe_count,
+            "shrd_complement",
         )?;
 
-        let mut of = builder.build_xor(
-            most_significant_bits_of_dest,
-            most_significant_bits_of_result,
-            "",
+        let shifted_dest = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            value,
+            info.safe_count,
+            "shrd_dest",
         )?;
-        of = self.create_z_ext_or_trunc(of, int_1_ty)?;
-        of = builder
-            .build_select(is_count_one, of, int_1_ty.const_zero(), "")?
-            .into_int_value();
-        of = builder.build_int_z_extend(of, int_1_ty, "")?;
+        let shifted_source = self.builder()?.build_int_shl::<IntDyn, _, _, _>(
+            source_value,
+            complement,
+            "shrd_source",
+        )?;
+        let combined = self.builder()?.build_int_or::<IntDyn, _, _, _>(
+            shifted_dest,
+            shifted_source,
+            "shrd_combined",
+        )?;
+        let result =
+            self.builder()?
+                .build_select(info.count_nonzero, combined, value, "shrd_result")?;
 
-        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
-        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
+        let cf_pos = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+            info.safe_count,
+            info.safe_count.ty().const_int_raw(1, false)?,
+            "shrd_cf_pos",
+        )?;
+        let cf_new = self.shift_low_bit_after_lshr(value, cf_pos)?;
+        let cf = self.builder()?.build_select(
+            info.count_nonzero,
+            cf_new,
+            self.load_flag(ExtendedRegisterEnum::CF)?,
+            "shrd_cf",
+        )?;
+        let of_new = self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+            self.shift_msb_flag(value)?,
+            self.shift_msb_flag(result)?,
+            "shrd_of_new",
+        )?;
+        let of = self.builder()?.build_select(
+            info.count_is_one,
+            of_new,
+            self.load_flag(ExtendedRegisterEnum::OF)?,
+            "shrd_of",
+        )?;
 
-        self.store_cpu_flag(
-            ExtendedRegisterEnum::PF,
-            self.compute_parity_flag(result_value)?,
-        );
-        self.store_cpu_flag(
-            ExtendedRegisterEnum::SF,
-            self.compute_sign_flag(result_value)?,
-        );
-        self.store_cpu_flag(
-            ExtendedRegisterEnum::ZF,
-            self.compute_zero_flag(result_value)?,
-        );
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of)?;
+        self.shift_store_status_flags(result, info.count_nonzero)?;
+        self.store_op(dest, result)
+    }
 
-        self.store_op(dest, result_value)?;
+    fn shift_legacy_count_info(
+        &self,
+        value: IntValue<'ctx, IntDyn>,
+        count: IntValue<'ctx, IntDyn>,
+    ) -> Result<ShiftLegacyCount<'ctx>> {
+        let bit_width = value.ty().bit_width();
+        let mask = if bit_width == 64 { 0x3f } else { 0x1f };
+        let count_ty = count.ty();
+        let masked = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            count,
+            count_ty.const_int_raw(mask, false)?,
+            "shift_count_masked",
+        )?;
+        let count_nonzero = self.builder()?.build_icmp_ne::<IntDyn, _, _, _>(
+            masked,
+            count_ty.const_zero(),
+            "shift_count_nonzero",
+        )?;
+        let count_is_one = self.builder()?.build_icmp_eq::<IntDyn, _, _, _>(
+            masked,
+            count_ty.const_int_raw(1, false)?,
+            "shift_count_one",
+        )?;
+        let max_shift = count_ty.const_int_raw(u64::from(bit_width - 1), false)?;
+        let too_large = self.builder()?.build_icmp_ugt::<IntDyn, _, _, _>(
+            masked,
+            max_shift,
+            "shift_count_too_large",
+        )?;
+        let max_shift_value = self.shift_const_value(count_ty, u64::from(bit_width - 1))?;
+        let shift_count =
+            self.builder()?
+                .build_select(too_large, max_shift_value, masked, "shift_count")?;
+        Ok(ShiftLegacyCount {
+            count: masked,
+            shift_count,
+            count_nonzero,
+            count_is_one,
+            too_large,
+        })
+    }
 
-        Ok(())
+    fn shift_bmi_count_info(
+        &self,
+        value: IntValue<'ctx, IntDyn>,
+        count: IntValue<'ctx, IntDyn>,
+    ) -> Result<ShiftBmiCount<'ctx>> {
+        let bit_width = value.ty().bit_width();
+        let mask = if bit_width == 64 { 0x3f } else { 0x1f };
+        let count_ty = count.ty();
+        let shift_count = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            count,
+            count_ty.const_int_raw(mask, false)?,
+            "bmi_shift_count",
+        )?;
+        Ok(ShiftBmiCount { shift_count })
+    }
+
+    fn shift_double_count_info(
+        &self,
+        value: IntValue<'ctx, IntDyn>,
+        count: IntValue<'ctx, IntDyn>,
+    ) -> Result<ShiftDoubleCount<'ctx>> {
+        let bit_width = value.ty().bit_width();
+        let mask = if bit_width == 64 { 0x3f } else { 0x1f };
+        let count_ty = count.ty();
+        let masked = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            count,
+            count_ty.const_int_raw(mask, false)?,
+            "double_shift_count_masked",
+        )?;
+        let effective = self.builder()?.build_int_urem::<IntDyn, _, _, _>(
+            masked,
+            count_ty.const_int_raw(u64::from(bit_width), false)?,
+            "double_shift_count",
+        )?;
+        let count_nonzero = self.builder()?.build_icmp_ne::<IntDyn, _, _, _>(
+            effective,
+            count_ty.const_zero(),
+            "double_shift_nonzero",
+        )?;
+        let count_is_one = self.builder()?.build_icmp_eq::<IntDyn, _, _, _>(
+            effective,
+            count_ty.const_int_raw(1, false)?,
+            "double_shift_one",
+        )?;
+        let one_value = self.shift_const_value(count_ty, 1)?;
+        let safe_count = self.builder()?.build_select(
+            count_nonzero,
+            effective,
+            one_value,
+            "double_shift_safe_count",
+        )?;
+        Ok(ShiftDoubleCount {
+            safe_count,
+            count_nonzero,
+            count_is_one,
+        })
+    }
+
+    fn shift_legacy_cf_count(
+        &self,
+        info: &ShiftLegacyCount<'ctx>,
+        bit_width: u32,
+    ) -> Result<IntValue<'ctx, IntDyn>> {
+        let count_ty = info.count.ty();
+        let one = self.shift_const_value(count_ty, 1)?;
+        let width = self.shift_const_value(count_ty, u64::from(bit_width))?;
+        let limited = self.builder()?.build_select(
+            info.too_large,
+            width,
+            info.count,
+            "shift_cf_count_limited",
+        )?;
+        Ok(self
+            .builder()?
+            .build_select(info.count_nonzero, limited, one, "shift_cf_count")?)
+    }
+
+    fn shift_store_status_flags(
+        &mut self,
+        result: IntValue<'ctx, IntDyn>,
+        update: IntValue<'ctx, bool>,
+    ) -> Result<()> {
+        let sf = self.builder()?.build_select(
+            update,
+            self.shift_sign_flag(result)?,
+            self.load_flag(ExtendedRegisterEnum::SF)?,
+            "shift_sf",
+        )?;
+        let zf = self.builder()?.build_select(
+            update,
+            self.shift_zero_flag(result)?,
+            self.load_flag(ExtendedRegisterEnum::ZF)?,
+            "shift_zf",
+        )?;
+        let pf = self.builder()?.build_select(
+            update,
+            self.shift_parity_flag(result)?,
+            self.load_flag(ExtendedRegisterEnum::PF)?,
+            "shift_pf",
+        )?;
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf)
+    }
+
+    fn shift_sign_flag(&self, value: IntValue<'ctx, IntDyn>) -> Result<IntValue<'ctx, IntDyn>> {
+        Ok(self
+            .builder()?
+            .build_icmp_slt::<IntDyn, _, _, _>(value, value.ty().const_zero(), "shift_sf_new")?
+            .as_dyn())
+    }
+
+    fn shift_zero_flag(&self, value: IntValue<'ctx, IntDyn>) -> Result<IntValue<'ctx, IntDyn>> {
+        Ok(self
+            .builder()?
+            .build_icmp_eq::<IntDyn, _, _, _>(value, value.ty().const_zero(), "shift_zf_new")?
+            .as_dyn())
+    }
+
+    fn shift_parity_flag(&self, value: IntValue<'ctx, IntDyn>) -> Result<IntValue<'ctx, IntDyn>> {
+        let mut folded = self.create_z_ext_or_trunc(value, self.module.i8_type().as_dyn())?;
+        let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            folded,
+            folded.ty().const_int_raw(4, false)?,
+            "shift_pf4",
+        )?;
+        folded = self
+            .builder()?
+            .build_int_xor::<IntDyn, _, _, _>(folded, shifted, "shift_pfx4")?;
+        let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            folded,
+            folded.ty().const_int_raw(2, false)?,
+            "shift_pf2",
+        )?;
+        folded = self
+            .builder()?
+            .build_int_xor::<IntDyn, _, _, _>(folded, shifted, "shift_pfx2")?;
+        let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            folded,
+            folded.ty().const_int_raw(1, false)?,
+            "shift_pf1",
+        )?;
+        folded = self
+            .builder()?
+            .build_int_xor::<IntDyn, _, _, _>(folded, shifted, "shift_pfx1")?;
+        let low_bit = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            folded,
+            folded.ty().const_int_raw(1, false)?,
+            "shift_pf_bit",
+        )?;
+        Ok(self
+            .builder()?
+            .build_icmp_eq::<IntDyn, _, _, _>(low_bit, low_bit.ty().const_zero(), "shift_pf")?
+            .as_dyn())
+    }
+
+    fn shift_msb_flag(&self, value: IntValue<'ctx, IntDyn>) -> Result<IntValue<'ctx, IntDyn>> {
+        let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            value,
+            value
+                .ty()
+                .const_int_raw(u64::from(value.ty().bit_width() - 1), false)?,
+            "shift_msb",
+        )?;
+        let bit = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            shifted,
+            shifted.ty().const_int_raw(1, false)?,
+            "shift_msb_bit",
+        )?;
+        self.create_z_ext_or_trunc(bit, self.module.bool_type().as_dyn())
+    }
+
+    fn shift_low_bit_after_lshr(
+        &self,
+        value: IntValue<'ctx, IntDyn>,
+        shift: IntValue<'ctx, IntDyn>,
+    ) -> Result<IntValue<'ctx, IntDyn>> {
+        let shifted =
+            self.builder()?
+                .build_int_lshr::<IntDyn, _, _, _>(value, shift, "shift_bit_source")?;
+        let bit = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            shifted,
+            shifted.ty().const_int_raw(1, false)?,
+            "shift_bit",
+        )?;
+        self.create_z_ext_or_trunc(bit, self.module.bool_type().as_dyn())
+    }
+
+    fn shift_bool_value(&self, value: bool) -> Result<IntValue<'ctx, IntDyn>> {
+        let value = if value {
+            self.module.bool_type().const_int(true)
+        } else {
+            self.module.bool_type().const_zero()
+        };
+        Ok(value.as_value().try_into()?)
+    }
+
+    fn shift_const_value(
+        &self,
+        ty: IntType<'ctx, IntDyn>,
+        value: u64,
+    ) -> Result<IntValue<'ctx, IntDyn>> {
+        Ok(ty.const_int_raw(value, false)?.as_value().try_into()?)
     }
 }

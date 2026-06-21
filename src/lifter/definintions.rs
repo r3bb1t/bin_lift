@@ -1,64 +1,83 @@
 use super::{Error, Result};
 
-use inkwell::{
-    types::{FloatType, IntType},
-    values::{BasicValueEnum, FloatValue, IntValue},
+use llvmkit::ir::{
+    ConstantIntValue, FloatDyn, FloatKind, FloatType, FloatValue, IntDyn, IntType, IntValue,
+    IntWidth,
 };
 
-/// Basically shrinked [BasicValueEnum]
-/// (https://thedan64.github.io/inkwell/inkwell/values/enum.BasicValueEnum.html)
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum PossibleLLVMValueEnum<'ctx> {
-    IntValue(IntValue<'ctx>),
-    FloatValue(FloatValue<'ctx>),
+pub(crate) enum LiftValue<'ctx> {
+    Int(IntValue<'ctx, IntDyn>),
+    Float(FloatValue<'ctx, FloatDyn>),
 }
 
-/// Basically shrinked [BasicValueEnum]
-/// (https://thedan64.github.io/inkwell/inkwell/types/enum.BasicTypeEnum.html)
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum PossibleLLVMTypeEnum<'ctx> {
-    IntType(IntType<'ctx>),
-    FloatType(FloatType<'ctx>),
+pub(crate) enum LiftType<'ctx> {
+    Int(IntType<'ctx, IntDyn>),
+    Float(FloatType<'ctx, FloatDyn>),
 }
 
-impl<'ctx> From<IntValue<'ctx>> for PossibleLLVMValueEnum<'ctx> {
-    fn from(value: IntValue<'ctx>) -> Self {
-        Self::IntValue(value)
+impl<'ctx, W: IntWidth> From<IntValue<'ctx, W>> for LiftValue<'ctx> {
+    fn from(value: IntValue<'ctx, W>) -> Self {
+        Self::Int(value.as_dyn())
     }
 }
 
-impl<'ctx> From<FloatValue<'ctx>> for PossibleLLVMValueEnum<'ctx> {
-    fn from(value: FloatValue<'ctx>) -> Self {
-        Self::FloatValue(value)
+impl<'ctx, W: IntWidth> From<ConstantIntValue<'ctx, W>> for LiftValue<'ctx> {
+    fn from(value: ConstantIntValue<'ctx, W>) -> Self {
+        let int_value = IntValue::<IntDyn>::try_from(value.as_value())
+            .unwrap_or_else(|_| unreachable!("ConstantIntValue always wraps an integer value"));
+        Self::Int(int_value)
     }
 }
 
-impl<'ctx> From<PossibleLLVMValueEnum<'ctx>> for BasicValueEnum<'ctx> {
-    fn from(value: PossibleLLVMValueEnum<'ctx>) -> Self {
-        match value {
-            PossibleLLVMValueEnum::IntValue(int_value) => Self::IntValue(int_value),
-            PossibleLLVMValueEnum::FloatValue(float_value) => Self::FloatValue(float_value),
+impl<'ctx, K: FloatKind> From<FloatValue<'ctx, K>> for LiftValue<'ctx> {
+    fn from(value: FloatValue<'ctx, K>) -> Self {
+        Self::Float(value.as_dyn())
+    }
+}
+
+impl<'ctx> From<IntType<'ctx, IntDyn>> for LiftType<'ctx> {
+    fn from(value: IntType<'ctx, IntDyn>) -> Self {
+        Self::Int(value)
+    }
+}
+
+impl<'ctx> From<FloatType<'ctx, FloatDyn>> for LiftType<'ctx> {
+    fn from(value: FloatType<'ctx, FloatDyn>) -> Self {
+        Self::Float(value)
+    }
+}
+
+impl<'ctx> TryFrom<LiftValue<'ctx>> for IntValue<'ctx, IntDyn> {
+    type Error = Error;
+
+    fn try_from(value: LiftValue<'ctx>) -> Result<Self> {
+        if let LiftValue::Int(int_val) = value {
+            Ok(int_val)
+        } else {
+            Err(Error::ConvertError)
         }
     }
 }
 
-impl<'ctx> From<IntType<'ctx>> for PossibleLLVMTypeEnum<'ctx> {
-    fn from(value: IntType<'ctx>) -> Self {
-        Self::IntType(value)
-    }
-}
-
-impl<'ctx> From<FloatType<'ctx>> for PossibleLLVMTypeEnum<'ctx> {
-    fn from(value: FloatType<'ctx>) -> Self {
-        Self::FloatType(value)
-    }
-}
-
-impl<'ctx> TryFrom<PossibleLLVMTypeEnum<'ctx>> for IntType<'ctx> {
+impl<'ctx> TryFrom<LiftValue<'ctx>> for FloatValue<'ctx, FloatDyn> {
     type Error = Error;
 
-    fn try_from(value: PossibleLLVMTypeEnum<'ctx>) -> Result<Self> {
-        if let PossibleLLVMTypeEnum::IntType(int_ty) = value {
+    fn try_from(value: LiftValue<'ctx>) -> Result<Self> {
+        if let LiftValue::Float(float_val) = value {
+            Ok(float_val)
+        } else {
+            Err(Error::ConvertError)
+        }
+    }
+}
+
+impl<'ctx> TryFrom<LiftType<'ctx>> for IntType<'ctx, IntDyn> {
+    type Error = Error;
+
+    fn try_from(value: LiftType<'ctx>) -> Result<Self> {
+        if let LiftType::Int(int_ty) = value {
             Ok(int_ty)
         } else {
             Err(Error::ConvertError)
@@ -66,36 +85,12 @@ impl<'ctx> TryFrom<PossibleLLVMTypeEnum<'ctx>> for IntType<'ctx> {
     }
 }
 
-impl<'ctx> TryFrom<PossibleLLVMTypeEnum<'ctx>> for FloatType<'ctx> {
+impl<'ctx> TryFrom<LiftType<'ctx>> for FloatType<'ctx, FloatDyn> {
     type Error = Error;
 
-    fn try_from(value: PossibleLLVMTypeEnum<'ctx>) -> Result<Self> {
-        if let PossibleLLVMTypeEnum::FloatType(float_ty) = value {
+    fn try_from(value: LiftType<'ctx>) -> Result<Self> {
+        if let LiftType::Float(float_ty) = value {
             Ok(float_ty)
-        } else {
-            Err(Error::ConvertError)
-        }
-    }
-}
-
-impl<'ctx> TryFrom<BasicValueEnum<'ctx>> for PossibleLLVMValueEnum<'ctx> {
-    type Error = Error;
-
-    fn try_from(value: BasicValueEnum<'ctx>) -> Result<Self> {
-        match value {
-            BasicValueEnum::IntValue(int_value) => Ok(Self::IntValue(int_value)),
-            BasicValueEnum::FloatValue(float_value) => Ok(Self::FloatValue(float_value)),
-            _ => Err(Error::ConvertError),
-        }
-    }
-}
-
-impl<'ctx> TryFrom<PossibleLLVMValueEnum<'ctx>> for IntValue<'ctx> {
-    type Error = Error;
-
-    fn try_from(value: PossibleLLVMValueEnum<'ctx>) -> Result<Self> {
-        if let PossibleLLVMValueEnum::IntValue(int_val) = value {
-            Ok(int_val)
         } else {
             Err(Error::ConvertError)
         }

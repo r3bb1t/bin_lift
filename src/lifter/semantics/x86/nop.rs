@@ -1,9 +1,9 @@
 use super::Result;
 use crate::lifter::LifterX86;
 
-impl LifterX86<'_> {
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
     #[inline]
-    pub(super) fn lift_nop(&self) -> Result<()> {
+    pub(super) fn lift_nop(&mut self) -> Result<()> {
         Ok(())
     }
 }

@@ -1,19 +1,17 @@
-use super::{definintions::PossibleLLVMValueEnum, LifterX86, Result};
+use super::{Error, LiftValue, LifterX86, Result};
 
-use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
+use llvmkit::ir::{IntDyn, IntValue, PointerValue};
 use zydis::{ffi::MemoryInfo, Register};
 
-impl<'ctx> LifterX86<'ctx> {
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
     pub(super) fn mergen_store_mem(
-        &self,
+        &mut self,
         mem: &MemoryInfo,
-        val: PossibleLLVMValueEnum<'ctx>,
+        val: LiftValue<'ctx>,
     ) -> Result<()> {
         let pointer = self.mergen_calculate_memory_operand(mem)?;
-
-        self.builder
-            .build_store(pointer, BasicValueEnum::from(val))?;
-
+        let value: IntValue<'ctx, IntDyn> = val.try_into()?;
+        self.builder()?.build_store(value, pointer)?;
         Ok(())
     }
 
@@ -21,111 +19,73 @@ impl<'ctx> LifterX86<'ctx> {
         &self,
         mem: &MemoryInfo,
         possible_size: u32,
-    ) -> Result<IntValue<'ctx>> {
+    ) -> Result<IntValue<'ctx, IntDyn>> {
         let pointer = self.mergen_calculate_memory_operand(mem)?;
-
-        let load_type = self.context.custom_width_int_type(possible_size);
-        // NOTE: revisit AddressSpace in future maybe
-        let retval = self
-            .builder
-            .build_load(load_type, pointer, "")?
-            .into_int_value();
-
-        Ok(retval)
+        let load_type = self.module.custom_width_int_type(possible_size)?;
+        Ok(self.builder()?.build_int_load_dyn(load_type, pointer, "")?)
     }
 
-    pub(crate) fn mergen_get_register(
-        &self,
-        reg: &Register,
-        possible_size: u32,
-    ) -> Result<PossibleLLVMValueEnum<'ctx>> {
-        let possible_size_type = self.context.custom_width_int_type(possible_size);
-        let value = self.load_register_value(reg)?;
-
-        if let PossibleLLVMValueEnum::IntValue(int_val) = value {
-            let type_bit_width = int_val.get_type().get_bit_width();
-
-            if type_bit_width < 128 {
-                let value_zext =
-                    self.create_z_ext_or_trunc(value.try_into()?, possible_size_type)?;
-                return Ok(value_zext.into());
-            }
-        }
-        Ok(value)
-    }
-
-    pub(crate) fn mergen_calculate_memory_operand(
+    pub(super) fn mergen_calculate_memory_operand(
         &self,
         mem: &MemoryInfo,
     ) -> Result<PointerValue<'ctx>> {
         let effective_address = self.mergen_get_effective_address(mem)?;
-
-        let memory_opperand = if mem.segment == Register::GS {
-            unimplemented!("TEB support isn't added yet");
-        } else {
-            self.stackmemory
-        };
-
-        let pointer = unsafe {
-            self.builder.build_gep(
-                self.context.i8_type(),
-                memory_opperand,
-                &[effective_address],
-                "",
-            )?
-        };
-
-        Ok(pointer)
+        Ok(self.builder()?.build_gep(
+            self.module.i8_type(),
+            self.stackmemory,
+            [effective_address],
+            "",
+        )?)
     }
 
-    // Used directly only here and by LEA
-    pub(crate) fn mergen_get_effective_address(&self, mem: &MemoryInfo) -> Result<IntValue<'ctx>> {
-        let builder = &self.builder;
-        let ctx = self.context;
+    pub(crate) fn mergen_get_effective_address(
+        &self,
+        mem: &MemoryInfo,
+    ) -> Result<IntValue<'ctx, IntDyn>> {
+        if mem.segment == Register::GS {
+            return Err(Error::UnsupportedInstr("gs segment memory"));
+        }
 
-        let i_64_ty = ctx.i64_type();
-
+        let addr_ty = self.get_max_int_type()?;
+        let builder = self.builder()?;
         let base_value = if mem.base != Register::NONE {
-            let base_value: IntValue<'_> = self.get_register(mem.base)?.try_into()?;
-            // TODO: consider not hardcoding in future
-            let base_value_z_ext = builder.build_int_z_extend(base_value, i_64_ty, "")?;
-            Some(base_value_z_ext)
+            let base: IntValue<'ctx, IntDyn> = self.get_register(mem.base)?.try_into()?;
+            Some(self.create_z_ext_or_trunc(base, addr_ty)?)
         } else {
             None
         };
-
-        let scale_value = if mem.index != Register::NONE {
-            let index_value: IntValue<'_> = self.get_register(mem.index)?.try_into()?;
-            let index_value_z_ext = builder.build_int_z_extend(index_value, i_64_ty, "")?;
-
+        let index_value = if mem.index != Register::NONE {
+            let index: IntValue<'ctx, IntDyn> = self.get_register(mem.index)?.try_into()?;
+            let index = self.create_z_ext_or_trunc(index, addr_ty)?;
             if mem.scale > 1 {
-                let scale_value = i_64_ty.const_int(mem.scale.into(), false);
-                let index_value_multiplied_by_scale =
-                    builder.build_int_mul(index_value_z_ext, scale_value, "")?;
-
-                Some(index_value_multiplied_by_scale)
+                Some(builder.build_int_mul::<IntDyn, _, _, _>(
+                    index,
+                    addr_ty.const_int_raw(u64::from(mem.scale), false)?,
+                    "",
+                )?)
             } else {
-                Some(index_value_z_ext)
+                Some(index)
             }
         } else {
             None
         };
 
-        let mut effective_address = if let [Some(base), Some(scale)] = [base_value, scale_value] {
-            builder.build_int_add(base, scale, "effective_address_")?
-        } else if let Some(base) = base_value {
-            base
-        } else if let Some(scale) = scale_value {
-            scale
-        } else {
-            // TODO: use error here maybe ???
-            i_64_ty.const_zero()
+        let mut effective_address = match (base_value, index_value) {
+            (Some(base), Some(index)) => {
+                builder.build_int_add::<IntDyn, _, _, _>(base, index, "effective_address_")?
+            }
+            (Some(base), None) => base,
+            (None, Some(index)) => index,
+            (None, None) => addr_ty.const_zero().as_value().try_into()?,
         };
 
         if mem.disp.displacement != 0 {
-            // TODO: Check it
-            let disp_value = i_64_ty.const_int(mem.disp.displacement as _, false);
-            effective_address = builder.build_int_add(effective_address, disp_value, "")?;
+            let displacement = u64::from_ne_bytes(mem.disp.displacement.to_ne_bytes());
+            effective_address = builder.build_int_add::<IntDyn, _, _, _>(
+                effective_address,
+                addr_ty.const_int_raw(displacement, true)?,
+                "",
+            )?;
         }
 
         Ok(effective_address)

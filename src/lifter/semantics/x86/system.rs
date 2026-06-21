@@ -1,34 +1,39 @@
-use super::{Error, LifterX86, Result};
-use crate::miscellaneous::ExtendedRegisterEnum;
+use super::Result;
+use crate::lifter::LifterX86;
 
-use inkwell::intrinsics::Intrinsic;
+use llvmkit::ir::{IntDyn, IntrinsicId, Linkage, Value};
+use zydis::Register;
 
-const RDTSC_INTRINSIC: &str = "llvm.readcyclecounter";
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    pub(super) fn lift_rdtsc(&mut self) -> Result<()> {
+        // FIXME: Keep this on llvmkit's intrinsic path and revisit once its intrinsic API stabilizes.
+        let name = "llvm.readcyclecounter";
+        let rdtsc_func = if let Some(existing) = self.module.function_by_name_typed::<i64>(name)? {
+            existing
+        } else {
+            let fn_ty = IntrinsicId::ReadCycleCounter.function_type(self.module, name)?;
+            self.module
+                .add_function::<i64, _>(name, fn_ty, Linkage::External)?
+        };
+        let timestamp = self
+            .builder()?
+            .build_call::<i64, _, _, _>(
+                rdtsc_func,
+                core::iter::empty::<Value<'ctx>>(),
+                "rdtsc_val",
+            )?
+            .return_int_value()
+            .as_dyn();
 
-impl LifterX86<'_> {
-    pub(super) fn lift_rdtsc(&self) -> Result<()> {
-        let builder = &self.builder;
-        let rdtsc_intrinsic =
-            Intrinsic::find(RDTSC_INTRINSIC).ok_or(Error::IntrinsicNotFound(RDTSC_INTRINSIC))?;
-
-        let rdtsc_func = rdtsc_intrinsic.get_declaration(&self.module, &[]).unwrap();
-        let rdtsc_call = builder.build_call(rdtsc_func, &[], "rdtsc_val")?;
-        let rdtsc_retval = rdtsc_call
-            .try_as_basic_value()
-            .left()
-            .unwrap()
-            .into_int_value();
-        let edx_part = builder.build_right_shift(
-            rdtsc_retval,
-            rdtsc_retval.get_type().const_int(32, false),
-            false,
-            "to_edx",
+        let eax = self.create_z_ext_or_trunc(timestamp, self.module.i32_type().as_dyn())?;
+        let edx_wide = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            timestamp,
+            timestamp.ty().const_int_raw(32, false)?,
+            "rdtsc_high",
         )?;
-        let eax_part = self.create_z_ext_or_trunc(rdtsc_retval, self.context.i32_type())?;
+        let edx = self.create_z_ext_or_trunc(edx_wide, self.module.i32_type().as_dyn())?;
 
-        self.store_reg(ExtendedRegisterEnum::EDX.into(), edx_part)?;
-        self.store_reg(ExtendedRegisterEnum::EAX.into(), eax_part)?;
-
-        Ok(())
+        self.store_reg(Register::EDX, edx)?;
+        self.store_reg(Register::EAX, eax)
     }
 }

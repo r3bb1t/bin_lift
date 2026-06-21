@@ -1,49 +1,43 @@
-use super::{LifterX86, Result};
-
-use inkwell::{values::IntValue, AddressSpace};
+use crate::lifter::{Error, LifterX86};
+use llvmkit::ir::IntDyn;
 use zydis::{ffi::DecodedOperandKind, Instruction, Operands, Register};
 
-impl LifterX86<'_> {
-    pub(super) fn lift_call<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
+use super::Result;
 
-        let src = &ops[0];
-        let rsp = &ops[2];
-        let rsp_memory = &ops[3];
-
-        let rsp_value: IntValue<'_> = self.load_single_op(rsp, rsp.size)?.try_into()?;
-
-        // FIXME: Replace 8 with actual calculations
-        let val = self
-            .context
-            .i64_type()
-            .const_int(self.retdec_get_arch_byte_size().into(), true);
-
-        let result = self
-            .builder
-            .build_int_sub(rsp_value, val, "pushing_new_rsp_")?;
-
-        if let DecodedOperandKind::Reg(register) = &src.kind {
-            let register_value: IntValue<'_> = self.load_register_value(register)?.try_into()?;
-
-            if !register_value.is_constant_int() {
-                let id_llvm = builder.build_int_to_ptr(
-                    register_value,
-                    self.context.ptr_type(AddressSpace::default()),
-                    "",
-                );
-                // TODO: implement later
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    pub(super) fn lift_call<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        let target = operands
+            .get(0)
+            .ok_or(Error::UnsupportedInstr("call without target"))?;
+        match &target.kind {
+            DecodedOperandKind::Reg(_)
+            | DecodedOperandKind::Imm(_)
+            | DecodedOperandKind::Mem(_) => {}
+            DecodedOperandKind::Ptr(_) => return Err(Error::UnsupportedInstr("far call operand")),
+            DecodedOperandKind::Unused => {
+                return Err(Error::UnsupportedInstr("missing call target"))
             }
-            let register_c_value = register_value.get_zero_extended_constant().unwrap();
-            #[cfg(debug_assertions)]
-            println!("CALL: jump address : {register_value}");
         }
 
-        self.store_op(rsp, result)?;
-        let push_into_rsp: IntValue<'_> = self.load_register_value(&Register::IP)?.try_into()?;
-        self.store_op(rsp_memory, push_into_rsp)?;
+        let sp = operands
+            .get(2)
+            .ok_or(Error::UnsupportedInstr("call without stack pointer"))?;
+        let stack_dest = operands
+            .get(3)
+            .ok_or(Error::UnsupportedInstr("call without stack destination"))?;
 
-        Ok(())
+        let sp_value = self.load_single_int_op(sp, sp.size)?;
+        let next_sp = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+            sp_value,
+            sp_value
+                .ty()
+                .const_int_raw(u64::from(self.retdec_get_arch_byte_size()), false)?,
+            "call_sp",
+        )?;
+        let return_address = self.load_register_value(&Register::IP)?;
+
+        self.store_op(sp, next_sp)?;
+        self.store_op(stack_dest, return_address)
     }
 }

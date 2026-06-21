@@ -1,28 +1,12 @@
-use crate::lifter::semantics::Lifter;
+use crate::lifter::semantics::{LiftControl, Lifter};
 use crate::lifter::LifterX86;
 use crate::miscellaneous::ExtendedRegisterEnum;
 
-use error::Error;
-use inkwell::module::Module;
-use inkwell::passes::PassBuilderOptions;
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
-use inkwell::values::FunctionValue;
-use inkwell::OptimizationLevel;
-use inkwell::{context::Context, values::IntValue};
-use zydis::{FullInstruction, InstructionAttributes, MachineMode, Register};
+use llvmkit::ir::{FunctionValue, IntDyn, IntValue, IrError, IrResult, Linkage, Module, Type};
+use zydis::{FullInstruction, MachineMode, Register};
 
-pub mod contexts;
-
-pub(super) mod error;
-pub(crate) use error::Result;
-
-pub struct Compiler<'ctx> {
-    pub context: &'ctx Context,
-    mode: MachineMode,
-    pub lifter: LifterX86<'ctx>,
-    func_value: FunctionValue<'ctx>,
-}
+pub mod error;
+pub use error::{Error, Result};
 
 pub(crate) const CPU_FLAGS: [ExtendedRegisterEnum; 18] = [
     ExtendedRegisterEnum::CF,
@@ -42,7 +26,6 @@ pub(crate) const CPU_FLAGS: [ExtendedRegisterEnum; 18] = [
     ExtendedRegisterEnum::VIF,
     ExtendedRegisterEnum::VIP,
     ExtendedRegisterEnum::ID,
-    // FIXME: Replace with flags
     ExtendedRegisterEnum::RFLAGS,
 ];
 
@@ -66,250 +49,106 @@ pub(crate) const ALL_REGS_IN_MIN_SIZE: [Register; 17] = [
     Register::IP,
 ];
 
-impl<'ctx> Compiler<'ctx> {
+pub struct Compiler<'m, 'ctx> {
+    mode: MachineMode,
+    pub lifter: LifterX86<'m, 'ctx>,
+    func_value: FunctionValue<'ctx, IntDyn>,
+}
+
+impl<'m, 'ctx> Compiler<'m, 'ctx> {
     pub fn new_with_x86_lifter(
-        context: &'ctx Context,
+        module: &'m Module<'ctx>,
         mode: MachineMode,
         runtime_address: Option<u64>,
     ) -> Result<Self> {
-        let module = context.create_module("protected");
-        let func_value = create_func(&mode, context, &module);
-        let lifter = LifterX86::new(context, mode, func_value, module, runtime_address).unwrap();
+        let func_value = create_func(module, mode)?;
+        let lifter = LifterX86::new(module, mode, func_value, runtime_address)?;
 
-        let compiler = Self {
-            context,
+        Ok(Self {
             mode,
             lifter,
             func_value,
-        };
-        Ok(compiler)
+        })
     }
 
-    pub fn lift_function(
-        &self,
-        instructions: &Vec<FullInstruction>,
-        optimize_results: bool,
-    ) -> Result<()> {
-        #[cfg(debug_assertions)]
-        let mut problems_hs = std::collections::HashSet::new();
-
-        #[cfg(debug_assertions)]
-        let mut missed_instructions_count = 0;
-        #[cfg(debug_assertions)]
-        let mut lifted_instructions_count = 0;
-
+    pub fn lift_function(&mut self, instructions: &[FullInstruction]) -> Result<()> {
         for instruction in instructions {
             match self.lifter.lift_instr(instruction) {
-                Ok(_) => {
-                    #[cfg(debug_assertions)]
-                    {
-                        lifted_instructions_count += 1;
-                    }
-                }
-                Err(e) => {
-                    #[cfg(debug_assertions)]
-                    {
-                        match e {
-                            crate::lifter::Error::UnsupportedInstr(_) => {
-                                problems_hs
-                                    .insert((instruction.mnemonic, instruction.meta.category));
-                                missed_instructions_count += 1;
-                            }
-                            _ => panic!("{e}"),
-                        }
-                    }
-                } //last_ins_attr = instruction.attributes;
+                Ok(LiftControl::Continue) => {}
+                Ok(LiftControl::FunctionTerminated) => return Ok(()),
+                Err(e) => return Err(Error::LifterError(e)),
             }
         }
 
-        #[cfg(debug_assertions)]
-        {
-            dbg!(problems_hs.len());
-            dbg!(problems_hs.len());
-            dbg!(problems_hs);
-            dbg!(missed_instructions_count);
-            dbg!(lifted_instructions_count);
+        if self.lifter.builder.is_some() {
+            let rax = Register::AX.largest_enclosing(self.mode);
+            let rax_val = self.lifter.load_register_value(&rax)?;
+            let rax_as_int: IntValue<'ctx, IntDyn> = rax_val.try_into()?;
+            let expected_retval_type = self.func_value.return_int_type();
+            let rax_with_correct_size = self
+                .lifter
+                .create_z_ext_or_trunc(rax_as_int, expected_retval_type)?;
+            let builder = self.lifter.take_builder()?;
+            builder.build_ret(rax_with_correct_size)?;
         }
 
-        let rax = zydis::Register::AX.largest_enclosing(self.mode);
-
-        if let Ok(rax_val) = self.lifter.load_register_value(&rax) {
-            let rax_as_int: IntValue<'ctx> = rax_val.try_into()?;
-            if let Some(BasicTypeEnum::IntType(expected_retval_type)) =
-                self.func_value.get_type().get_return_type()
-            {
-                let rax_with_correct_size = self
-                    .lifter
-                    .create_z_ext_or_trunc(rax_as_int, expected_retval_type)?;
-
-                #[cfg(debug_assertions)]
-                println!("Rax result: {rax_with_correct_size:#?}");
-
-                self.lifter
-                    .builder
-                    .build_return(Some(&rax_with_correct_size))?;
-            } else {
-                self.lifter.builder.build_return(Some(&rax_as_int))?;
-            }
-        }
-
-        if optimize_results {
-            let pass_options = PassBuilderOptions::create();
-            //pass_options.set_verify_each(true);
-            //pass_options.set_debug_logging(true);
-            pass_options.set_loop_interleaving(true);
-            pass_options.set_loop_vectorization(true);
-            pass_options.set_loop_slp_vectorization(true);
-            pass_options.set_loop_unrolling(true);
-            pass_options.set_forget_all_scev_in_loop_unroll(true);
-            pass_options.set_licm_mssa_opt_cap(1);
-            pass_options.set_licm_mssa_no_acc_for_promotion_cap(10);
-            pass_options.set_call_graph_profile(true);
-            pass_options.set_merge_functions(true);
-
-            let initialization_config = &InitializationConfig::default();
-            Target::initialize_all(initialization_config);
-
-            let triple = TargetMachine::get_default_triple();
-            let target = Target::from_triple(&triple).unwrap();
-            let machine = target
-                .create_target_machine(
-                    &triple,
-                    //TODO : Add cpu features as optionals
-                    "generic", //TargetMachine::get_host_cpu_name().to_string().as_str(),
-                    "",        //TargetMachine::get_host_cpu_features().to_string().as_str(),
-                    OptimizationLevel::Aggressive,
-                    RelocMode::Default,
-                    CodeModel::Default,
-                )
-                .ok_or(Error::UnableToCreateTargetMachine)?;
-            self.lifter
-                .module
-                .run_passes("default<O2>", &machine, pass_options)
-                .map_err(Error::OptimizationsError)?;
-        }
-
-        //Ok(&self.func_value)
         Ok(())
     }
+}
 
-    //pub fn compile_new<O: Operands>(
-    //    &'ctx self,
-    //    instructions: Vec<Instruction<O>>,
-    //) -> Result<FunctionValue<'ctx>, BuilderError> {
-    //    let func_value = Self::create_func(&self.mode, self.context, &self.module);
-    //
-    //    let entry_basic_block = self.context.append_basic_block(func_value, "entry");
-    //    self.builder.position_at_end(entry_basic_block);
-    //
-    //    for ins in instructions {
-    //        self.lifter.lift_instr(ins)?;
-    //    }
-    //
-    //    Ok(func_value)
-    //}
-    //
-    ///// Compiles the specified `Function` in the given `Context` and using the specified `Builder` and `Module`.
-    //pub fn compile<O: Operands>(
-    //    context: &'ctx Context,
-    //    builder: &'ctx Builder<'ctx>,
-    //    module: &'ctx Module<'ctx>,
-    //    instructions: Vec<Instruction<O>>,
-    //    mode: MachineMode,
-    //) -> Result<FunctionValue<'ctx>, BuilderError> {
-    //    let compiler = Compiler {
-    //        context,
-    //        builder,
-    //        module,
-    //        mode,
-    //    };
-    //
-    //    let compiled_fn = compiler.compile_fn(instructions)?;
-    //
-    //    Ok(compiled_fn)
-    //}
-
-    //// Compiles stuff into an LLVM `FunctionValue`.
-    //fn compile_fn<O: Operands>(
-    //    &'ctx self,
-    //    instructions: Vec<Instruction<O>>,
-    //) -> Result<FunctionValue<'ctx>, BuilderError> {
-    //    let func_value = self.create_func(&self.mode);
-    //
-    //    let regs_hashmap = prep_regs_hashmap(&func_value, &self.mode);
-    //
-    //    let entry_basic_block = self.context.append_basic_block(func_value, "entry");
-    //    self.builder.position_at_end(entry_basic_block);
-    //
-    //    //let lifter = LifterX86 {
-    //    //    context: self.context,
-    //    //    builder: self.builder,
-    //    //    module: self.module,
-    //    //    regs_hashmap: RefCell::new(regs_hashmap),
-    //    //    mode: self.mode.clone(),
-    //    //};
-    //
-    //    let lifter = LifterX86::new(
-    //        self.context,
-    //        self.builder,
-    //        self.module,
-    //        self.mode,
-    //        regs_hashmap,
-    //    );
-    //
-    //    for ins in instructions {
-    //        lifter.lift_instr(ins)?;
-    //    }
-    //
-    //    Ok(func_value)
-    //}
+pub fn lift_to_ir_text<'ctx>(
+    module: Module<'ctx>,
+    instructions: &[FullInstruction],
+    mode: MachineMode,
+    runtime_address: Option<u64>,
+) -> Result<String> {
+    {
+        let mut compiler = Compiler::new_with_x86_lifter(&module, mode, runtime_address)?;
+        compiler.lift_function(instructions)?;
+    }
+    let verified = module.verify()?;
+    Ok(format!("{verified}"))
 }
 
 pub(crate) fn create_func<'ctx>(
-    mode: &MachineMode,
-    context: &'ctx Context,
     module: &Module<'ctx>,
-) -> FunctionValue<'ctx> {
-    let example_reg = Register::AX.largest_enclosing(*mode); // random rax for convenience
-    let int_type = context.custom_width_int_type(example_reg.width(*mode).into());
-    //let int_type = get_int_type(context, &example_reg, mode);
+    mode: MachineMode,
+) -> IrResult<FunctionValue<'ctx, IntDyn>> {
+    let example_reg = Register::AX.largest_enclosing(mode);
+    let int_type = module.custom_width_int_type(example_reg.width(mode).into())?;
 
     const ARGS_COUNT: usize = ALL_REGS_IN_MIN_SIZE.len() + CPU_FLAGS.len();
-    let regs_args: [BasicMetadataTypeEnum; ALL_REGS_IN_MIN_SIZE.len()] =
-        core::array::from_fn(|_| int_type.into());
-
-    //let flags_args: [BasicMetadataTypeEnum; CPU_FLAGS.len()] =
-    //    core::array::from_fn(|_| context.i8_type().into());
-    let flags_args: [BasicMetadataTypeEnum; CPU_FLAGS.len()] =
-        core::array::from_fn(|_| context.bool_type().into());
-
-    let mut args = Vec::with_capacity(ARGS_COUNT);
-    args.extend_from_slice(&regs_args);
-    args.extend_from_slice(&flags_args);
-
-    let fn_type = int_type.fn_type(&args, false);
-    let fn_val = module.add_function("protected", fn_type, None);
-
-    /// Inner function for converting register names
-    fn get_reg_name_for_mode(reg: Register, mode: MachineMode) -> &'static str {
-        reg.largest_enclosing(mode).static_string().unwrap()
+    let mut args: Vec<Type<'ctx>> = Vec::with_capacity(ARGS_COUNT);
+    for _ in ALL_REGS_IN_MIN_SIZE {
+        args.push(int_type.as_type());
+    }
+    for _ in CPU_FLAGS {
+        args.push(module.bool_type().as_type());
     }
 
-    // Set names for regular regs
+    let fn_type = module.fn_type(int_type.as_type(), args, false);
+    let mut builder = module
+        .function_builder::<IntDyn, _>("protected", fn_type)
+        .linkage(Linkage::External);
+
     for (id, reg) in ALL_REGS_IN_MIN_SIZE.into_iter().enumerate() {
-        fn_val
-            .get_nth_param(id as u32)
-            .unwrap()
-            .set_name(get_reg_name_for_mode(reg, *mode));
+        let slot = u32::try_from(id).map_err(|_| IrError::InvalidOperation {
+            message: "register argument index exceeds u32::MAX",
+        })?;
+        let name =
+            reg.largest_enclosing(mode)
+                .static_string()
+                .ok_or(IrError::InvalidOperation {
+                    message: "register name missing",
+                })?;
+        builder = builder.param_name(slot, name);
     }
-
-    // Set names for CPU flags
     for (id, cpu_flag) in CPU_FLAGS.into_iter().enumerate() {
-        fn_val
-            .get_nth_param((ALL_REGS_IN_MIN_SIZE.len() + id) as u32)
-            .unwrap()
-            .set_name(&format!("{cpu_flag:?}"));
+        let raw_slot = ALL_REGS_IN_MIN_SIZE.len() + id;
+        let slot = u32::try_from(raw_slot).map_err(|_| IrError::InvalidOperation {
+            message: "flag argument index exceeds u32::MAX",
+        })?;
+        builder = builder.param_name(slot, format!("{cpu_flag:?}"));
     }
-
-    fn_val
+    builder.build()
 }

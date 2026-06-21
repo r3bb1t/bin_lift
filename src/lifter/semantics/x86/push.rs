@@ -1,58 +1,77 @@
-use super::{LifterX86, Result};
+use crate::lifter::{Error, LifterX86};
+use llvmkit::ir::IntDyn;
+use zydis::{ffi::DecodedOperand, Instruction, Mnemonic, Operands};
 
-use inkwell::values::IntValue;
-use zydis::{Instruction, Operands};
+use super::Result;
 
-impl LifterX86<'_> {
-    pub(super) fn lift_push<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    pub(super) fn lift_push<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
         let operands = instr.operands();
+        let (src, stack_dest, sp) = match instr.mnemonic {
+            Mnemonic::PUSH => (
+                operands
+                    .get(0)
+                    .ok_or(Error::UnsupportedInstr("push without source"))?,
+                operands
+                    .get(2)
+                    .ok_or(Error::UnsupportedInstr("push without stack destination"))?,
+                operands
+                    .get(1)
+                    .ok_or(Error::UnsupportedInstr("push without stack pointer"))?,
+            ),
+            Mnemonic::PUSHFQ => (
+                operands
+                    .get(2)
+                    .ok_or(Error::UnsupportedInstr("pushfq without flags source"))?,
+                operands
+                    .get(1)
+                    .ok_or(Error::UnsupportedInstr("pushfq without stack destination"))?,
+                operands
+                    .get(0)
+                    .ok_or(Error::UnsupportedInstr("pushfq without stack pointer"))?,
+            ),
+            _ => return Err(Error::UnsupportedInstr("unsupported push instruction")),
+        };
 
-        let src = &operands[0];
-        let dest = &operands[2];
-        let rsp = &operands[1];
-
-        let r_value = self.load_single_op(src, dest.size)?;
-        let rsp_value: IntValue<'_> = self.load_single_op(rsp, rsp.size)?.try_into()?;
-
-        let val = self
-            .context
-            // // TODO: check this. Different from Mergen
-            // .custom_width_int_type(dest.size.into())
-            .i64_type()
-            .const_int((dest.size / 8).into(), true);
-        let result = self
-            .builder
-            .build_int_sub(rsp_value, val, "pushing_new_rsp_")?;
-
-        self.store_op(rsp, result)?;
-        self.store_op(dest, r_value)?;
-
-        Ok(())
+        self.push_stack_value(src, stack_dest, sp)
     }
 
-    pub(super) fn lift_pushfq<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
+    pub(super) fn lift_pushfq<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        if instr.mnemonic != Mnemonic::PUSHFQ {
+            return Err(Error::UnsupportedInstr("unsupported pushfq instruction"));
+        }
+
         let operands = instr.operands();
+        let src = operands
+            .get(2)
+            .ok_or(Error::UnsupportedInstr("pushfq without flags source"))?;
+        let stack_dest = operands
+            .get(1)
+            .ok_or(Error::UnsupportedInstr("pushfq without stack destination"))?;
+        let sp = operands
+            .get(0)
+            .ok_or(Error::UnsupportedInstr("pushfq without stack pointer"))?;
 
-        let src = &operands[2];
-        let dest = &operands[1];
-        let rsp = &operands[0];
+        self.push_stack_value(src, stack_dest, sp)
+    }
 
-        let r_value = self.load_single_op(src, dest.size)?;
-        let rsp_value: IntValue<'_> = self.load_single_op(rsp, rsp.size)?.try_into()?;
+    fn push_stack_value(
+        &mut self,
+        src: &DecodedOperand,
+        stack_dest: &DecodedOperand,
+        sp: &DecodedOperand,
+    ) -> Result<()> {
+        let value = self.load_single_op(src, stack_dest.size)?;
+        let sp_value = self.load_single_int_op(sp, sp.size)?;
+        let next_sp = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+            sp_value,
+            sp_value
+                .ty()
+                .const_int_raw(u64::from(stack_dest.size / 8), false)?,
+            "push_sp",
+        )?;
 
-        let val = self
-            .context
-            // // TODO: check this. Different from Mergen
-            // .custom_width_int_type(dest.size.into())
-            .i64_type()
-            .const_int((dest.size / 8).into(), true);
-        let result = self
-            .builder
-            .build_int_sub(rsp_value, val, "pushing_new_rsp_")?;
-
-        self.store_op(rsp, result)?;
-        self.store_op(dest, r_value)?;
-
-        Ok(())
+        self.store_op(sp, next_sp)?;
+        self.store_op(stack_dest, value)
     }
 }

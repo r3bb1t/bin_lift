@@ -1,418 +1,395 @@
-use super::{LifterX86, Result};
+use super::Result;
+use crate::lifter::{Error, LifterX86};
 use crate::miscellaneous::ExtendedRegisterEnum;
 
-use inkwell::{values::IntValue, IntPredicate};
-use zydis::{Instruction, Operands};
+use llvmkit::ir::{IntDyn, IntType, IntValue};
+use zydis::{Instruction, Mnemonic, Operands};
 
-impl LifterX86<'_> {
-    // NOTE: checked
-    pub(super) fn lift_rcl<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
+struct RotateCount<'ctx> {
+    safe_count: IntValue<'ctx, IntDyn>,
+    count_nonzero: IntValue<'ctx, bool>,
+    count_is_one: IntValue<'ctx, bool>,
+}
 
-        let dest = &ops[0];
-        let count = &ops[1];
-        let dest_size: u32 = ops[0].size.into();
-
-        let l_value = IntValue::try_from(self.load_single_op(dest, dest.size)?)?;
-        let count_value = IntValue::try_from(self.load_single_op(count, dest.size)?)?;
-
-        let count_value_ty = count_value.get_type();
-
-        let cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-        let bit_width: u64 = l_value.get_type().get_bit_width().into();
-        let mask_c = if bit_width == 64 { 0x3f } else { 0x1f };
-
-        let mut actual_count = builder.build_and(
-            count_value,
-            count_value_ty.const_int(mask_c, false),
-            "rcl_actual_count",
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    pub(super) fn lift_rcl<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        if instr.mnemonic != Mnemonic::RCL {
+            return Err(Error::UnsupportedInstr(
+                "unsupported rotate-through-carry-left instruction",
+            ));
+        }
+        let operands = instr.operands();
+        let dest = &operands[0];
+        let count_op = &operands[1];
+        let value = self.load_single_int_op(dest, dest.size)?;
+        let count = self.load_single_int_op(count_op, dest.size)?;
+        let info = self.rotate_carry_count_info(value, count)?;
+        let bit_width = value.ty().bit_width();
+        let ring_ty = self.module.custom_width_int_type(bit_width + 1)?;
+        let combined = self.rotate_carry_combined_value(value, ring_ty)?;
+        let safe_count = self.create_z_ext_or_trunc(info.safe_count, ring_ty)?;
+        let ring_width = self.rotate_const_value(ring_ty, u64::from(bit_width + 1))?;
+        let complement = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+            ring_width,
+            safe_count,
+            "rcl_complement",
+        )?;
+        let left = self
+            .builder()?
+            .build_int_shl::<IntDyn, _, _, _>(combined, safe_count, "rcl_left")?;
+        let right =
+            self.builder()?
+                .build_int_lshr::<IntDyn, _, _, _>(combined, complement, "rcl_right")?;
+        let rotated =
+            self.builder()?
+                .build_int_or::<IntDyn, _, _, _>(left, right, "rcl_rotated")?;
+        let raw_result = self.create_z_ext_or_trunc(rotated, value.ty())?;
+        let result =
+            self.builder()?
+                .build_select(info.count_nonzero, raw_result, value, "rcl_result")?;
+        let cf_new = self.rotate_low_bit_after_lshr(
+            rotated,
+            self.rotate_const_value(ring_ty, u64::from(bit_width))?,
+        )?;
+        let cf = self.builder()?.build_select(
+            info.count_nonzero,
+            cf_new,
+            self.load_flag(ExtendedRegisterEnum::CF)?,
+            "rcl_cf",
+        )?;
+        let of_new = self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+            self.rotate_msb_flag(result)?,
+            cf_new,
+            "rcl_of_new",
+        )?;
+        let of = self.builder()?.build_select(
+            info.count_is_one,
+            of_new,
+            self.load_flag(ExtendedRegisterEnum::OF)?,
+            "rcl_of",
         )?;
 
-        actual_count = if bit_width < 16 {
-            builder.build_int_unsigned_rem(
-                actual_count,
-                count_value_ty.const_int(bit_width + 1, false),
-                "rcl_actual_count2",
+        self.store_op(dest, result)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of)
+    }
+
+    pub(super) fn lift_rcr<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        if instr.mnemonic != Mnemonic::RCR {
+            return Err(Error::UnsupportedInstr(
+                "unsupported rotate-through-carry-right instruction",
+            ));
+        }
+        let operands = instr.operands();
+        let dest = &operands[0];
+        let count_op = &operands[1];
+        let value = self.load_single_int_op(dest, dest.size)?;
+        let count = self.load_single_int_op(count_op, dest.size)?;
+        let info = self.rotate_carry_count_info(value, count)?;
+        let bit_width = value.ty().bit_width();
+        let ring_ty = self.module.custom_width_int_type(bit_width + 1)?;
+        let combined = self.rotate_carry_combined_value(value, ring_ty)?;
+        let safe_count = self.create_z_ext_or_trunc(info.safe_count, ring_ty)?;
+        let ring_width = self.rotate_const_value(ring_ty, u64::from(bit_width + 1))?;
+        let complement = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+            ring_width,
+            safe_count,
+            "rcr_complement",
+        )?;
+        let right =
+            self.builder()?
+                .build_int_lshr::<IntDyn, _, _, _>(combined, safe_count, "rcr_right")?;
+        let left = self
+            .builder()?
+            .build_int_shl::<IntDyn, _, _, _>(combined, complement, "rcr_left")?;
+        let rotated =
+            self.builder()?
+                .build_int_or::<IntDyn, _, _, _>(right, left, "rcr_rotated")?;
+        let raw_result = self.create_z_ext_or_trunc(rotated, value.ty())?;
+        let result =
+            self.builder()?
+                .build_select(info.count_nonzero, raw_result, value, "rcr_result")?;
+        let cf_new = self.rotate_low_bit_after_lshr(
+            rotated,
+            self.rotate_const_value(ring_ty, u64::from(bit_width))?,
+        )?;
+        let cf = self.builder()?.build_select(
+            info.count_nonzero,
+            cf_new,
+            self.load_flag(ExtendedRegisterEnum::CF)?,
+            "rcr_cf",
+        )?;
+        let of_new = self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+            self.rotate_msb_flag(result)?,
+            self.rotate_second_msb_flag(result)?,
+            "rcr_of_new",
+        )?;
+        let of = self.builder()?.build_select(
+            info.count_is_one,
+            of_new,
+            self.load_flag(ExtendedRegisterEnum::OF)?,
+            "rcr_of",
+        )?;
+
+        self.store_op(dest, result)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of)
+    }
+
+    pub(super) fn lift_rol<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        if instr.mnemonic != Mnemonic::ROL {
+            return Err(Error::UnsupportedInstr(
+                "unsupported rotate-left instruction",
+            ));
+        }
+        let operands = instr.operands();
+        let dest = &operands[0];
+        let count_op = &operands[1];
+        let value = self.load_single_int_op(dest, dest.size)?;
+        let count = self.load_single_int_op(count_op, dest.size)?;
+        let info = self.rotate_plain_count_info(value, count)?;
+        let bit_width = value.ty().bit_width();
+        let width = self.rotate_const_value(value.ty(), u64::from(bit_width))?;
+        let complement = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+            width,
+            info.safe_count,
+            "rol_complement",
+        )?;
+        let left =
+            self.builder()?
+                .build_int_shl::<IntDyn, _, _, _>(value, info.safe_count, "rol_left")?;
+        let right =
+            self.builder()?
+                .build_int_lshr::<IntDyn, _, _, _>(value, complement, "rol_right")?;
+        let rotated =
+            self.builder()?
+                .build_int_or::<IntDyn, _, _, _>(left, right, "rol_rotated")?;
+        let result =
+            self.builder()?
+                .build_select(info.count_nonzero, rotated, value, "rol_result")?;
+        let cf_new = self.rotate_lsb_flag(result)?;
+        let cf = self.builder()?.build_select(
+            info.count_nonzero,
+            cf_new,
+            self.load_flag(ExtendedRegisterEnum::CF)?,
+            "rol_cf",
+        )?;
+        let of_new = self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+            self.rotate_msb_flag(result)?,
+            cf_new,
+            "rol_of_new",
+        )?;
+        let of = self.builder()?.build_select(
+            info.count_is_one,
+            of_new,
+            self.load_flag(ExtendedRegisterEnum::OF)?,
+            "rol_of",
+        )?;
+
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of)?;
+        self.store_op(dest, result)
+    }
+
+    pub(super) fn lift_ror<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        if instr.mnemonic != Mnemonic::ROR {
+            return Err(Error::UnsupportedInstr(
+                "unsupported rotate-right instruction",
+            ));
+        }
+        let operands = instr.operands();
+        let dest = &operands[0];
+        let count_op = &operands[1];
+        let value = self.load_single_int_op(dest, dest.size)?;
+        let count = self.load_single_int_op(count_op, dest.size)?;
+        let info = self.rotate_plain_count_info(value, count)?;
+        let bit_width = value.ty().bit_width();
+        let width = self.rotate_const_value(value.ty(), u64::from(bit_width))?;
+        let complement = self.builder()?.build_int_sub::<IntDyn, _, _, _>(
+            width,
+            info.safe_count,
+            "ror_complement",
+        )?;
+        let right = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            value,
+            info.safe_count,
+            "ror_right",
+        )?;
+        let left = self
+            .builder()?
+            .build_int_shl::<IntDyn, _, _, _>(value, complement, "ror_left")?;
+        let rotated =
+            self.builder()?
+                .build_int_or::<IntDyn, _, _, _>(right, left, "ror_rotated")?;
+        let result =
+            self.builder()?
+                .build_select(info.count_nonzero, rotated, value, "ror_result")?;
+        let cf_new = self.rotate_msb_flag(result)?;
+        let cf = self.builder()?.build_select(
+            info.count_nonzero,
+            cf_new,
+            self.load_flag(ExtendedRegisterEnum::CF)?,
+            "ror_cf",
+        )?;
+        let of_new = self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+            self.rotate_msb_flag(result)?,
+            self.rotate_second_msb_flag(result)?,
+            "ror_of_new",
+        )?;
+        let of = self.builder()?.build_select(
+            info.count_is_one,
+            of_new,
+            self.load_flag(ExtendedRegisterEnum::OF)?,
+            "ror_of",
+        )?;
+
+        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::OF, of)?;
+        self.store_op(dest, result)
+    }
+
+    fn rotate_plain_count_info(
+        &self,
+        value: IntValue<'ctx, IntDyn>,
+        count: IntValue<'ctx, IntDyn>,
+    ) -> Result<RotateCount<'ctx>> {
+        let bit_width = value.ty().bit_width();
+        let mask = if bit_width == 64 { 0x3f } else { 0x1f };
+        let count_ty = count.ty();
+        let masked = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            count,
+            count_ty.const_int_raw(mask, false)?,
+            "rotate_count_masked",
+        )?;
+        let effective = self.builder()?.build_int_urem::<IntDyn, _, _, _>(
+            masked,
+            count_ty.const_int_raw(u64::from(bit_width), false)?,
+            "rotate_count",
+        )?;
+        self.rotate_count_from_effective(effective)
+    }
+
+    fn rotate_carry_count_info(
+        &self,
+        value: IntValue<'ctx, IntDyn>,
+        count: IntValue<'ctx, IntDyn>,
+    ) -> Result<RotateCount<'ctx>> {
+        let bit_width = value.ty().bit_width();
+        let mask = if bit_width == 64 { 0x3f } else { 0x1f };
+        let count_ty = count.ty();
+        let masked = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            count,
+            count_ty.const_int_raw(mask, false)?,
+            "rotate_carry_count_masked",
+        )?;
+        let effective = if bit_width == 8 || bit_width == 16 {
+            self.builder()?.build_int_urem::<IntDyn, _, _, _>(
+                masked,
+                count_ty.const_int_raw(u64::from(bit_width + 1), false)?,
+                "rotate_carry_count",
             )?
         } else {
-            actual_count
+            masked
         };
-
-        let wide_type = self.context.custom_width_int_type(dest_size * 2);
-        let wide_l_value = builder.build_int_z_extend(l_value, wide_type, "rcl_wide_ty_val")?;
-        let cf_extended = builder.build_int_z_extend(cf, wide_type, "rcl_cf_extended")?;
-        let shifted_in_cf = cf_extended;
-
-        actual_count = builder.build_int_z_extend(actual_count, wide_type, "rcl_actual_count")?;
-
-        let left_shifted = builder.build_left_shift(
-            wide_l_value,
-            builder.build_int_z_extend(actual_count, wide_type, "rcl_actual_count_extended")?,
-            "rcl_left_shifted",
-        )?;
-
-        let right_shift_amount = builder.build_int_sub(
-            wide_type.const_int(dest_size.into(), false),
-            actual_count,
-            "rcl_right_shift_amount",
-        )?;
-
-        // left shifted actually
-        let right_shifted = builder.build_right_shift(
-            wide_l_value,
-            builder.build_int_z_extend(
-                right_shift_amount,
-                wide_type,
-                "rcl_actual_count_extended",
-            )?,
-            false,
-            "",
-        )?;
-
-        let rotated = {
-            let rotated = builder.build_or(
-                left_shifted,
-                builder.build_int_z_extend(right_shifted, wide_type, "")?,
-                "",
-            )?;
-
-            let rotated = builder.build_right_shift(rotated, actual_count, false, "")?;
-            let rotated = builder.build_left_shift(rotated, actual_count, "")?;
-            builder.build_or(rotated, shifted_in_cf, "")?
-        };
-
-        let result = self.create_z_ext_or_trunc(rotated, l_value.get_type())?;
-
-        let int_1_ty = self.context.custom_width_int_type(1);
-        let new_cf_bit_position = rotated.get_type().const_int(dest_size.into(), false);
-        let new_cf = self.create_z_ext_or_trunc(
-            builder.build_right_shift(rotated, new_cf_bit_position, false, "")?,
-            int_1_ty,
-        )?;
-
-        let msb_after_rotate = self.create_z_ext_or_trunc(
-            builder.build_right_shift(
-                result,
-                result.get_type().const_int(dest_size.into(), false),
-                false,
-                "rclmsbafterrotate",
-            )?,
-            int_1_ty,
-        )?;
-
-        let is_count_one = builder.build_int_compare(
-            IntPredicate::EQ,
-            actual_count,
-            actual_count.get_type().const_int(1, false),
-            "",
-        )?;
-
-        let new_of =
-            self.create_z_ext_or_trunc(builder.build_xor(new_cf, msb_after_rotate, "")?, int_1_ty)?;
-
-        let new_of = builder
-            .build_select(
-                is_count_one,
-                new_of,
-                self.load_flag(ExtendedRegisterEnum::OF)?,
-                "new_of",
-            )?
-            .into_int_value();
-
-        let is_count_zero = builder.build_int_compare(
-            IntPredicate::EQ,
-            actual_count,
-            actual_count.get_type().const_zero(),
-            "rcl_is_count_zero",
-        )?;
-
-        let result = builder
-            .build_select(is_count_zero, l_value, result, "")?
-            .into_int_value();
-        let new_cf = builder
-            .build_select(is_count_zero, cf, new_cf, "")?
-            .into_int_value();
-        let new_of = builder
-            .build_select(
-                is_count_zero,
-                self.load_flag(ExtendedRegisterEnum::OF)?,
-                new_of,
-                "",
-            )?
-            .into_int_value();
-
-        self.store_op(dest, result)?;
-
-        self.store_cpu_flag(ExtendedRegisterEnum::CF, new_cf);
-        self.store_cpu_flag(ExtendedRegisterEnum::OF, new_of);
-        Ok(())
+        self.rotate_count_from_effective(effective)
     }
 
-    // NOTE: checked
-    pub(super) fn lift_rcr<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ctx = self.context;
-
-        let ops = instr.operands();
-        let dest = &ops[0];
-        let count = &ops[1];
-
-        let dest_size: u32 = dest.size.into();
-
-        //let [l_value, count_value] = self.load_two_first_ints(ops)?;
-        let l_value: IntValue<'_> = self.load_single_op(dest, dest.size)?.try_into()?;
-        let count_value: IntValue<'_> = self.load_single_op(count, dest.size)?.try_into()?;
-        let carry_flag = self.load_flag(ExtendedRegisterEnum::CF)?;
-
-        let l_value_ty = l_value.get_type();
-        let count_value_ty = count_value.get_type();
-
-        let count_mask = count_value_ty.const_int(if dest_size == 64 { 0x3f } else { 0x1f }, false);
-        let mut actual_count = builder.build_and(count_value, count_mask, "")?;
-
-        let bit_width = l_value_ty.const_int(dest_size.into(), false);
-        let bit_width_plus_one = l_value_ty.const_int((dest_size + 1).into(), false);
-        let bit_width_minus_one = l_value_ty.const_int((dest_size - 1).into(), false);
-        let one = l_value_ty.const_int(1, false);
-        let zero = l_value_ty.const_zero();
-
-        actual_count = builder.build_int_unsigned_rem(actual_count, bit_width_plus_one, "")?;
-
-        let wide_type = ctx.custom_width_int_type((dest.size * 2).into());
-        let wide_l_value = builder.build_int_z_extend(l_value, wide_type, "")?;
-        let wide_cf = builder.build_int_z_extend(carry_flag, wide_type, "")?;
-
-        let shifted_cf =
-            builder.build_left_shift(wide_cf, wide_type.const_int(dest_size.into(), false), "")?;
-
-        let combined_value = builder.build_or(wide_l_value, shifted_cf, "")?;
-
-        let right_shifted = builder.build_right_shift(
-            combined_value,
-            builder.build_int_z_extend(actual_count, wide_type, "")?,
-            false,
-            "",
+    fn rotate_count_from_effective(
+        &self,
+        count: IntValue<'ctx, IntDyn>,
+    ) -> Result<RotateCount<'ctx>> {
+        let count_ty = count.ty();
+        let count_nonzero = self.builder()?.build_icmp_ne::<IntDyn, _, _, _>(
+            count,
+            count_ty.const_zero(),
+            "rotate_count_nonzero",
         )?;
-
-        let left_shifted = builder.build_left_shift(
-            combined_value,
-            builder.build_int_sub(
-                builder.build_int_z_extend(bit_width_plus_one, wide_type, "")?,
-                builder.build_int_z_extend(actual_count, wide_type, "")?,
-                "",
-            )?,
-            "",
+        let count_is_one = self.builder()?.build_icmp_eq::<IntDyn, _, _, _>(
+            count,
+            count_ty.const_int_raw(1, false)?,
+            "rotate_count_one",
         )?;
-
-        let rotated = builder.build_or(right_shifted, left_shifted, "")?;
-
-        let mut result = builder.build_int_truncate(rotated, l_value_ty, "")?;
-
-        let mut new_cf = builder.build_int_truncate(
-            builder.build_right_shift(
-                rotated,
-                wide_type.const_int(dest_size.into(), false),
-                false,
-                "",
-            )?,
-            ctx.bool_type(),
-            "",
-        )?;
-
-        let msb_pos = l_value_ty.const_int((dest_size - 1).into(), false);
-        let second_msb_pos = l_value_ty.const_int((dest_size - 2).into(), false);
-
-        let msb = self.create_z_ext_or_trunc(
-            builder.build_right_shift(result, msb_pos, false, "")?,
-            ctx.bool_type(),
-        )?;
-
-        let second_msb = self.create_z_ext_or_trunc(
-            builder.build_right_shift(result, second_msb_pos, false, "")?,
-            ctx.bool_type(),
-        )?;
-
-        let of_defined =
-            self.create_z_ext_or_trunc(builder.build_xor(msb, second_msb, "")?, ctx.bool_type())?;
-
-        let is_count_one = builder.build_int_compare(IntPredicate::EQ, actual_count, one, "")?;
-
-        let mut new_of = builder
-            .build_select(
-                is_count_one,
-                of_defined,
-                self.load_flag(ExtendedRegisterEnum::CF)?,
-                "",
-            )?
-            .into_int_value();
-
-        let is_count_zero = builder.build_int_compare(IntPredicate::EQ, actual_count, zero, "")?;
-        result = builder
-            .build_select(is_count_zero, l_value, result, "")?
-            .into_int_value();
-
-        new_cf = builder
-            .build_select(is_count_zero, carry_flag, new_cf, "")?
-            .into_int_value();
-        new_of = builder
-            .build_select(
-                is_count_zero,
-                self.load_flag(ExtendedRegisterEnum::OF)?,
-                new_of,
-                "",
-            )?
-            .into_int_value();
-
-        self.store_op(dest, result)?;
-        self.store_cpu_flag(ExtendedRegisterEnum::CF, new_cf);
-        self.store_cpu_flag(ExtendedRegisterEnum::OF, new_of);
-
-        Ok(())
+        let one = self.rotate_const_value(count_ty, 1)?;
+        let safe_count =
+            self.builder()?
+                .build_select(count_nonzero, count, one, "rotate_safe_count")?;
+        Ok(RotateCount {
+            safe_count,
+            count_nonzero,
+            count_is_one,
+        })
     }
 
-    pub(super) fn lift_rol<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-
-        let ops = instr.operands();
-        let dest = &ops[0];
-        let src = &ops[1];
-
-        let int_1_ty = self.context.bool_type();
-
-        let dest_size: u64 = dest.size.into();
-
-        let l_value: IntValue<'_> = self.load_single_op(dest, dest.size)?.try_into()?;
-        let mut r_value: IntValue<'_> = self.load_single_op(src, dest.size)?.try_into()?;
-
-        let l_value_ty = l_value.get_type();
-
-        let bit_width = l_value_ty.const_int(dest_size, false);
-        let bit_width_plus_one = l_value_ty.const_int(dest_size + 1, false);
-        let count_mask = l_value_ty.const_int(if dest_size == 64 { 0x3f } else { 0x1f }, false);
-
-        let one = l_value_ty.const_int(1, false);
-        let zero = l_value_ty.const_zero();
-
-        let msb_pos = l_value_ty.const_int(dest_size - 1, false);
-        r_value = builder.build_int_unsigned_rem(
-            builder.build_int_add(r_value, count_mask, "make_r_value_")?,
-            bit_width,
-            "",
+    fn rotate_carry_combined_value(
+        &self,
+        value: IntValue<'ctx, IntDyn>,
+        ring_ty: IntType<'ctx, IntDyn>,
+    ) -> Result<IntValue<'ctx, IntDyn>> {
+        let bit_width = value.ty().bit_width();
+        let wide_value = self.create_z_ext_or_trunc(value, ring_ty)?;
+        let cf = self.create_z_ext_or_trunc(self.load_flag(ExtendedRegisterEnum::CF)?, ring_ty)?;
+        let shifted_cf = self.builder()?.build_int_shl::<IntDyn, _, _, _>(
+            cf,
+            ring_ty.const_int_raw(u64::from(bit_width), false)?,
+            "rotate_carry_cf",
         )?;
-
-        let shifted_left = builder.build_left_shift(l_value, r_value, "")?;
-        let shifted_right = builder.build_right_shift(
-            l_value,
-            builder.build_int_sub(bit_width, r_value, "")?,
-            false,
-            "rol_",
-        )?;
-        let mut result = builder.build_or(shifted_left, shifted_right, "")?;
-        let mut cf = self.create_z_ext_or_trunc(shifted_right, int_1_ty)?;
-
-        let is_zero_bit_rotation =
-            builder.build_int_compare(IntPredicate::EQ, r_value, zero, "is_zero_bit_rotation_")?;
-        let old_cf = self.load_flag(ExtendedRegisterEnum::CF)?;
-
-        cf = builder
-            .build_select(is_zero_bit_rotation, old_cf, cf, "")?
-            .into_int_value();
-
-        result = builder
-            .build_select(is_zero_bit_rotation, l_value, result, "result")?
-            .into_int_value();
-
-        let new_msb = builder.build_right_shift(result, msb_pos, false, "")?;
-        let of1 = self.create_z_ext_or_trunc(new_msb, int_1_ty)?;
-
-        let mut of = builder.build_xor(cf, of1, "")?;
-
-        let is_one_bit_rotation =
-            builder.build_int_compare(IntPredicate::EQ, r_value, one, "is_one_bit_rotation")?;
-        let of_current = self.load_flag(ExtendedRegisterEnum::OF)?;
-        of = builder
-            .build_select(is_one_bit_rotation, of, of_current, "")?
-            .into_int_value();
-        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
-        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
-
-        self.store_op(dest, result)?;
-
-        Ok(())
+        Ok(self.builder()?.build_int_or::<IntDyn, _, _, _>(
+            wide_value,
+            shifted_cf,
+            "rotate_carry_combined",
+        )?)
     }
 
-    pub(super) fn lift_ror<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-
-        let ops = instr.operands();
-        let dest = &ops[0];
-        let src = &ops[1];
-
-        let int_1_ty = self.context.bool_type();
-
-        let dest_size: u64 = dest.size.into();
-
-        let l_value: IntValue<'_> = self.load_single_op(dest, dest.size)?.try_into()?;
-        let mut r_value: IntValue<'_> = self.load_single_op(src, dest.size)?.try_into()?;
-
-        let l_value_ty = l_value.get_type();
-
-        let bit_width = l_value_ty.const_int(dest_size, false);
-        let bit_width_plus_one = l_value_ty.const_int(dest_size + 1, false);
-        let count_mask = l_value_ty.const_int(if dest_size == 64 { 0x3f } else { 0x1f }, false);
-
-        let one = l_value_ty.const_int(1, false);
-        let zero = l_value_ty.const_zero();
-
-        let msb_pos = l_value_ty.const_int(dest_size - 1, false);
-        let second_msb_pos = l_value_ty.const_int(dest_size - 2, false);
-        r_value = builder.build_int_unsigned_rem(
-            builder.build_int_add(r_value, count_mask, "mask_r_value_")?,
-            bit_width,
-            "",
+    fn rotate_lsb_flag(&self, value: IntValue<'ctx, IntDyn>) -> Result<IntValue<'ctx, IntDyn>> {
+        let bit = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            value,
+            value.ty().const_int_raw(1, false)?,
+            "rotate_lsb",
         )?;
+        self.create_z_ext_or_trunc(bit, self.module.bool_type().as_dyn())
+    }
 
-        let right_shifted = builder.build_right_shift(l_value, r_value, false, "")?;
-        let left_shifted = builder.build_left_shift(
-            l_value,
-            builder.build_int_sub(bit_width, r_value, "")?,
-            "rol_",
+    fn rotate_msb_flag(&self, value: IntValue<'ctx, IntDyn>) -> Result<IntValue<'ctx, IntDyn>> {
+        let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            value,
+            value
+                .ty()
+                .const_int_raw(u64::from(value.ty().bit_width() - 1), false)?,
+            "rotate_msb_shifted",
         )?;
-        let mut result = builder.build_or(right_shifted, left_shifted, "")?;
-        let msb = builder.build_right_shift(result, msb_pos, false, "")?;
-        let mut cf = self.create_z_ext_or_trunc(msb, int_1_ty)?;
-        let second_msb = builder.build_right_shift(result, second_msb_pos, false, "")?;
+        self.rotate_lsb_flag(shifted)
+    }
 
-        let of_defined =
-            self.create_z_ext_or_trunc(builder.build_xor(msb, second_msb, "")?, cf.get_type())?;
+    fn rotate_second_msb_flag(
+        &self,
+        value: IntValue<'ctx, IntDyn>,
+    ) -> Result<IntValue<'ctx, IntDyn>> {
+        let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            value,
+            value
+                .ty()
+                .const_int_raw(u64::from(value.ty().bit_width() - 2), false)?,
+            "rotate_second_msb_shifted",
+        )?;
+        self.rotate_lsb_flag(shifted)
+    }
 
-        let is_one_bit_rotation = builder.build_int_compare(IntPredicate::EQ, r_value, one, "")?;
+    fn rotate_low_bit_after_lshr(
+        &self,
+        value: IntValue<'ctx, IntDyn>,
+        shift: IntValue<'ctx, IntDyn>,
+    ) -> Result<IntValue<'ctx, IntDyn>> {
+        let shifted =
+            self.builder()?
+                .build_int_lshr::<IntDyn, _, _, _>(value, shift, "rotate_bit_source")?;
+        self.rotate_lsb_flag(shifted)
+    }
 
-        let is_zero_bit_rotation =
-            builder.build_int_compare(IntPredicate::EQ, r_value, zero, "is_zero_bit_rotation_")?;
-        let of_current = self.load_flag(ExtendedRegisterEnum::OF)?;
-        let of = builder
-            .build_select(is_one_bit_rotation, of_defined, of_current, "ror-of")?
-            .into_int_value();
-
-        cf = builder
-            .build_select(
-                is_zero_bit_rotation,
-                self.load_flag(ExtendedRegisterEnum::CF)?,
-                cf,
-                "",
-            )?
-            .into_int_value();
-
-        self.store_cpu_flag(ExtendedRegisterEnum::CF, cf);
-        self.store_cpu_flag(ExtendedRegisterEnum::OF, of);
-
-        result = builder
-            .build_select(is_zero_bit_rotation, l_value, result, "ror-result")?
-            .into_int_value();
-
-        self.store_op(dest, result)?;
-        Ok(())
+    fn rotate_const_value(
+        &self,
+        ty: IntType<'ctx, IntDyn>,
+        value: u64,
+    ) -> Result<IntValue<'ctx, IntDyn>> {
+        Ok(ty.const_int_raw(value, false)?.as_value().try_into()?)
     }
 }

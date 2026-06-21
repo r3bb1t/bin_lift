@@ -1,138 +1,157 @@
-use super::{LifterX86, Result};
+use super::Result;
+use crate::lifter::{Error, LifterX86};
 use crate::miscellaneous::ExtendedRegisterEnum;
 
-use inkwell::{values::IntValue, IntPredicate};
-use zydis::{Instruction, Operands};
+use llvmkit::ir::{IntDyn, IntValue};
+use zydis::{Instruction, Mnemonic, Operands};
 
-impl LifterX86<'_> {
-    pub(super) fn lift_and_andn<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-
+impl<'m, 'ctx> LifterX86<'m, 'ctx> {
+    pub(super) fn lift_and_andn<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
         let operands = instr.operands();
         let dest = &operands[0];
-        let src = &operands[1];
 
-        let lhs_int = self.load_single_int_op(dest, dest.size)?;
-        let rhs_int = self.load_single_int_op(src, dest.size)?;
-
-        let lhs_final = match instr.mnemonic {
-            zydis::Mnemonic::AND => lhs_int,
-            zydis::Mnemonic::ANDN => builder.build_not(lhs_int, "andn_not")?,
-            _ => unreachable!(),
+        let (lhs, rhs) = match instr.mnemonic {
+            Mnemonic::AND => (
+                self.load_single_int_op(dest, dest.size)?,
+                self.load_single_int_op(&operands[1], dest.size)?,
+            ),
+            Mnemonic::ANDN if operands.len() >= 3 => (
+                self.load_single_int_op(&operands[1], dest.size)?,
+                self.load_single_int_op(&operands[2], dest.size)?,
+            ),
+            Mnemonic::ANDN => return Err(Error::UnsupportedInstr("andn requires three operands")),
+            _ => {
+                return Err(Error::UnsupportedInstr(
+                    "unsupported logical and instruction",
+                ))
+            }
         };
 
-        let value = builder.build_and(lhs_final, rhs_int, "and_op")?;
+        let lhs = if instr.mnemonic == Mnemonic::ANDN {
+            self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+                lhs,
+                lhs.ty().const_all_ones(),
+                "andn_not",
+            )?
+        } else {
+            lhs
+        };
 
-        let sf = self.compute_sign_flag(value)?;
-        let zf = self.compute_zero_flag(value)?;
-        let pf = self.compute_parity_flag(value)?;
+        let value = self
+            .builder()?
+            .build_int_and::<IntDyn, _, _, _>(lhs, rhs, "and")?;
 
-        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
-        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
-        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
-
-        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false);
-        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false);
-
-        self.store_op(dest, value)?;
-        Ok(())
+        self.logical_store_status_flags(value)?;
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false)?;
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false)?;
+        self.store_op(dest, value)
     }
 
-    // NOTE: checked
-    pub(super) fn lift_not<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
-        let ops = instr.operands();
-
-        let dest = &ops[0];
-
-        let mut r_value: IntValue<'_> = self.load_single_op(dest, dest.size)?.try_into()?;
-
-        r_value = builder.build_xor(r_value, r_value.get_type().const_all_ones(), "")?;
-
-        self.store_op(dest, r_value)?;
-        Ok(())
+    pub(super) fn lift_not<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let dest = &instr.operands()[0];
+        let value = self.load_single_int_op(dest, dest.size)?;
+        let result = self.builder()?.build_int_xor::<IntDyn, _, _, _>(
+            value,
+            value.ty().const_all_ones(),
+            "not",
+        )?;
+        self.store_op(dest, result)
     }
 
-    // NOTE: checked
-    pub(super) fn lift_or<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
+    pub(super) fn lift_or<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
         let operands = instr.operands();
         let dest = &operands[0];
-        let src = &operands[1];
-
-        let rhs = self.load_single_int_op(src, dest.size)?;
         let lhs = self.load_single_int_op(dest, dest.size)?;
+        let rhs = self.load_single_int_op(&operands[1], dest.size)?;
+        let result = self
+            .builder()?
+            .build_int_or::<IntDyn, _, _, _>(lhs, rhs, "or")?;
 
-        let result = self.builder.build_or(lhs, rhs, "")?;
-
-        let pf = self.compute_parity_flag(result)?;
-        let sf = self.compute_sign_flag(result)?;
-        let zf = self.compute_zero_flag(result)?;
-
-        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
-        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
-        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
-
-        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false);
-        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false);
-
-        self.store_op(dest, result)?;
-        Ok(())
+        self.logical_store_status_flags(result)?;
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false)?;
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false)?;
+        self.store_op(dest, result)
     }
 
-    // NOTE: checked
-    pub(super) fn lift_test<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let builder = &self.builder;
+    pub(super) fn lift_test<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        let lhs = self.load_single_int_op(&operands[0], operands[0].size)?;
+        let rhs = self.load_single_int_op(&operands[1], operands[0].size)?;
+        let result = self
+            .builder()?
+            .build_int_and::<IntDyn, _, _, _>(lhs, rhs, "test")?;
 
-        let ops = instr.operands();
-
-        let dest = &ops[0];
-        let src = &ops[1];
-
-        let lhs_int = self.load_single_int_op(dest, dest.size)?;
-        let rhs_int = self.load_single_int_op(src, dest.size)?;
-
-        let test_result = builder.build_and(lhs_int, rhs_int, "test_and")?;
-
-        let zero = test_result.get_type().const_zero();
-
-        let sf = builder.build_int_compare(IntPredicate::SLT, test_result, zero, "sf")?;
-        let zf = builder.build_int_compare(IntPredicate::EQ, test_result, zero, "zf")?;
-        let pf = self.compute_parity_flag(test_result)?;
-
-        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
-        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
-        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
-
-        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false);
-        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false);
-
-        Ok(())
+        self.logical_store_status_flags(result)?;
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false)?;
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false)
     }
 
-    // NOTE: checked
-    pub(super) fn lift_xor<O: Operands>(&self, instr: &Instruction<O>) -> Result<()> {
-        let ops = instr.operands();
+    pub(super) fn lift_xor<O: Operands>(&mut self, instr: &Instruction<O>) -> Result<()> {
+        let operands = instr.operands();
+        let dest = &operands[0];
+        let lhs = self.load_single_int_op(dest, dest.size)?;
+        let rhs = self.load_single_int_op(&operands[1], dest.size)?;
+        let result = self
+            .builder()?
+            .build_int_xor::<IntDyn, _, _, _>(lhs, rhs, "xor")?;
 
-        let dest = &ops[0];
-        let src = &ops[1];
+        self.logical_store_status_flags(result)?;
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false)?;
+        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false)?;
+        self.store_op(dest, result)
+    }
 
-        let lhs_int = self.load_single_int_op(dest, dest.size)?;
-        let rhs_int = self.load_single_int_op(src, dest.size)?;
+    fn logical_store_status_flags(&mut self, value: IntValue<'ctx, IntDyn>) -> Result<()> {
+        let zero = value.ty().const_zero();
+        let sf = self
+            .builder()?
+            .build_icmp_slt::<IntDyn, _, _, _>(value, zero, "logical_sf")?
+            .as_dyn();
+        let zf = self
+            .builder()?
+            .build_icmp_eq::<IntDyn, _, _, _>(value, zero, "logical_zf")?
+            .as_dyn();
+        let pf = self.logical_parity_flag(value)?;
 
-        let result = self.builder.build_xor(lhs_int, rhs_int, "xor_")?;
+        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf)?;
+        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf)
+    }
 
-        let sf = self.compute_sign_flag(result)?;
-        let zf = self.compute_zero_flag(result)?;
-        let pf = self.compute_parity_flag(result)?;
-
-        self.store_cpu_flag(ExtendedRegisterEnum::SF, sf);
-        self.store_cpu_flag(ExtendedRegisterEnum::ZF, zf);
-        self.store_cpu_flag(ExtendedRegisterEnum::PF, pf);
-
-        self.store_cpu_flag_bool(ExtendedRegisterEnum::CF, false);
-        self.store_cpu_flag_bool(ExtendedRegisterEnum::OF, false);
-
-        self.store_op(dest, result)?;
-        Ok(())
+    fn logical_parity_flag(&self, value: IntValue<'ctx, IntDyn>) -> Result<IntValue<'ctx, IntDyn>> {
+        let mut folded = self.create_z_ext_or_trunc(value, self.module.i8_type().as_dyn())?;
+        let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            folded,
+            folded.ty().const_int_raw(4, false)?,
+            "logical_pf4",
+        )?;
+        folded =
+            self.builder()?
+                .build_int_xor::<IntDyn, _, _, _>(folded, shifted, "logical_pfx4")?;
+        let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            folded,
+            folded.ty().const_int_raw(2, false)?,
+            "logical_pf2",
+        )?;
+        folded =
+            self.builder()?
+                .build_int_xor::<IntDyn, _, _, _>(folded, shifted, "logical_pfx2")?;
+        let shifted = self.builder()?.build_int_lshr::<IntDyn, _, _, _>(
+            folded,
+            folded.ty().const_int_raw(1, false)?,
+            "logical_pf1",
+        )?;
+        folded =
+            self.builder()?
+                .build_int_xor::<IntDyn, _, _, _>(folded, shifted, "logical_pfx1")?;
+        let low_bit = self.builder()?.build_int_and::<IntDyn, _, _, _>(
+            folded,
+            folded.ty().const_int_raw(1, false)?,
+            "logical_pf_bit",
+        )?;
+        Ok(self
+            .builder()?
+            .build_icmp_eq::<IntDyn, _, _, _>(low_bit, low_bit.ty().const_zero(), "logical_pf")?
+            .as_dyn())
     }
 }
