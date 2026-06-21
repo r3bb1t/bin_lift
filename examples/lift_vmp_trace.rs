@@ -3,6 +3,14 @@ use std::error::Error;
 use std::time::Instant;
 use zydis::Decoder;
 
+/// Lifts a recorded x86-64 instruction trace to verified textual LLVM IR and
+/// writes it to `lifted.ll`.
+///
+/// The trace currently comes from `examples/files/newest_trace.bin`. The
+/// decoder keeps one instruction from each REP-prefixed pair because the trace
+/// stores REP and the following operation as adjacent decoded instructions.
+///
+/// `START_ADDRESS` is the runtime base used for RIP-relative memory operands.
 fn main() -> Result<(), Box<dyn Error>> {
     let decoder = Decoder::new64();
     let raw_bytes = std::include_bytes!("files/newest_trace.bin");
