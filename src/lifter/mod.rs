@@ -1,7 +1,7 @@
 pub mod error;
 pub use error::{Error, Result};
 
-use crate::compiler::{ALL_REGS_IN_MIN_SIZE, CPU_FLAGS};
+use crate::compiler::{register_arg_count, register_args_in_min_size, CPU_FLAGS};
 use crate::miscellaneous::ExtendedRegisterEnum;
 use std::{cell::Cell, collections::HashMap};
 
@@ -10,7 +10,7 @@ use llvmkit::ir::{
     Brand, ConstantFolder, FunctionValue, IRBuilder, IntDyn, IntValue, Module, PointerValue,
     Positioned, Unverified,
 };
-use zydis::{MachineMode, Register};
+use zydis::MachineMode;
 
 mod common;
 mod definintions;
@@ -43,7 +43,7 @@ impl<'m, 'ctx> LifterX86<'m, 'ctx> {
         let builder = IRBuilder::new_for::<IntDyn>(module).position_at_end(entry_basic_block);
 
         let stackmemory = builder.build_array_alloca(
-            module.i128_type(),
+            module.i8_type(),
             module.i128_type().as_dyn().const_int_raw(0x1000, false)?,
             "stackmemory",
         )?;
@@ -64,9 +64,12 @@ fn prep_regs_hashmap_experimental<'ctx>(
     mode: MachineMode,
 ) -> Result<HashMap<ExtendedRegisterEnum, LiftValue<'ctx>>> {
     let mut registers_hashmap = HashMap::new();
-    let regs: [Register; 17] = ALL_REGS_IN_MIN_SIZE.map(|reg| reg.largest_enclosing(mode));
+    let register_arg_count = register_arg_count(mode);
 
-    for (id, reg) in regs.into_iter().enumerate() {
+    for (id, reg) in register_args_in_min_size(mode)
+        .map(|reg| reg.largest_enclosing(mode))
+        .enumerate()
+    {
         let slot = u32::try_from(id).map_err(|_| llvmkit::ir::IrError::InvalidOperation {
             message: "register argument index exceeds u32::MAX",
         })?;
@@ -75,7 +78,7 @@ fn prep_regs_hashmap_experimental<'ctx>(
     }
 
     for (id, cpu_flag) in CPU_FLAGS.into_iter().enumerate() {
-        let raw_slot = regs.len() + id;
+        let raw_slot = register_arg_count + id;
         let slot = u32::try_from(raw_slot).map_err(|_| llvmkit::ir::IrError::InvalidOperation {
             message: "flag argument index exceeds u32::MAX",
         })?;

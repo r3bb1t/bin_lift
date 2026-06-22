@@ -29,7 +29,7 @@ pub(crate) const CPU_FLAGS: [ExtendedRegisterEnum; 18] = [
     ExtendedRegisterEnum::RFLAGS,
 ];
 
-pub(crate) const ALL_REGS_IN_MIN_SIZE: [Register; 17] = [
+pub(crate) const BASE_REGS_IN_MIN_SIZE: [Register; 8] = [
     Register::AX,
     Register::BX,
     Register::CX,
@@ -38,6 +38,9 @@ pub(crate) const ALL_REGS_IN_MIN_SIZE: [Register; 17] = [
     Register::DI,
     Register::SP,
     Register::BP,
+];
+
+pub(crate) const X64_REGS_IN_MIN_SIZE: [Register; 8] = [
     Register::R8B,
     Register::R9B,
     Register::R10B,
@@ -46,8 +49,30 @@ pub(crate) const ALL_REGS_IN_MIN_SIZE: [Register; 17] = [
     Register::R13B,
     Register::R14B,
     Register::R15B,
-    Register::IP,
 ];
+
+pub(crate) fn register_arg_count(mode: MachineMode) -> usize {
+    BASE_REGS_IN_MIN_SIZE.len()
+        + if mode == MachineMode::LONG_64 {
+            X64_REGS_IN_MIN_SIZE.len()
+        } else {
+            0
+        }
+        + 1
+}
+
+pub(crate) fn register_args_in_min_size(mode: MachineMode) -> impl Iterator<Item = Register> {
+    let extended: &[Register] = if mode == MachineMode::LONG_64 {
+        &X64_REGS_IN_MIN_SIZE
+    } else {
+        &[]
+    };
+
+    BASE_REGS_IN_MIN_SIZE
+        .into_iter()
+        .chain(extended.iter().copied())
+        .chain([Register::IP])
+}
 
 pub struct Compiler<'m, 'ctx> {
     mode: MachineMode,
@@ -117,9 +142,9 @@ pub(crate) fn create_func<'ctx>(
     let example_reg = Register::AX.largest_enclosing(mode);
     let int_type = module.custom_width_int_type(example_reg.width(mode).into())?;
 
-    const ARGS_COUNT: usize = ALL_REGS_IN_MIN_SIZE.len() + CPU_FLAGS.len();
-    let mut args: Vec<Type<'ctx>> = Vec::with_capacity(ARGS_COUNT);
-    for _ in ALL_REGS_IN_MIN_SIZE {
+    let register_arg_count = register_arg_count(mode);
+    let mut args: Vec<Type<'ctx>> = Vec::with_capacity(register_arg_count + CPU_FLAGS.len());
+    for _ in register_args_in_min_size(mode) {
         args.push(int_type.as_type());
     }
     for _ in CPU_FLAGS {
@@ -131,7 +156,7 @@ pub(crate) fn create_func<'ctx>(
         .function_builder::<IntDyn, _>("protected", fn_type)
         .linkage(Linkage::External);
 
-    for (id, reg) in ALL_REGS_IN_MIN_SIZE.into_iter().enumerate() {
+    for (id, reg) in register_args_in_min_size(mode).enumerate() {
         let slot = u32::try_from(id).map_err(|_| IrError::InvalidOperation {
             message: "register argument index exceeds u32::MAX",
         })?;
@@ -144,7 +169,7 @@ pub(crate) fn create_func<'ctx>(
         builder = builder.param_name(slot, name);
     }
     for (id, cpu_flag) in CPU_FLAGS.into_iter().enumerate() {
-        let raw_slot = ALL_REGS_IN_MIN_SIZE.len() + id;
+        let raw_slot = register_arg_count + id;
         let slot = u32::try_from(raw_slot).map_err(|_| IrError::InvalidOperation {
             message: "flag argument index exceeds u32::MAX",
         })?;

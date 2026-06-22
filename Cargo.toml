@@ -9,6 +9,6 @@ name = "zydis2llvmir"
 path = "src/lib.rs"
 
 [dependencies]
-llvmkit = { version = "0.0.2", path = "../rllvm/llvmkit" }
+llvmkit = "0.0.2"
 thiserror = "2"
 zydis = { version = "4.1.1", features = ["default"] }
