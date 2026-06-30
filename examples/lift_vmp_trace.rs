@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     const START_ADDRESS: u64 = 0x1400118d9;
 
     let ir = Module::with_new("protected", |module| {
-        zydis2llvmir::compiler::lift_to_ir_text(module, &instructions, mode, Some(START_ADDRESS))
+        bin_lift::compiler::lift_to_ir_text(module, &instructions, mode, Some(START_ADDRESS))
     })?;
     let elapsed = now.elapsed();
     println!("Lifted vec with {instrs_count} instructions. Took {elapsed:?}");

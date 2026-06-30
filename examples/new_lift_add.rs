@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let ir = Module::with_new("protected", |module| {
-        zydis2llvmir::compiler::lift_to_ir_text(module, &all_instructions, mode, None)
+        bin_lift::compiler::lift_to_ir_text(module, &all_instructions, mode, None)
     })?;
     println!("{ir}");
     println!("Elapsed: {:?}", start_time.elapsed());

@@ -5,10 +5,10 @@ edition = "2021"
 
 
 [lib]
-name = "zydis2llvmir"
+name = "bin_lift"
 path = "src/lib.rs"
 
 [dependencies]
-llvmkit = "0.0.2"
+llvmkit = "0.0.3"
 thiserror = "2"
 zydis = { version = "4.1.1", features = ["default"] }

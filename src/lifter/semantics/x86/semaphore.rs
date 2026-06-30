@@ -28,8 +28,7 @@ impl<'m, 'ctx> LifterX86<'m, 'ctx> {
                     AtomicRMWConfig::new(AtomicOrdering::SequentiallyConsistent, SyncScope::System),
                     "xadd_atomic",
                 )?;
-                let lhs: IntValue<'ctx, IntDyn> =
-                    old_inst.as_instruction().as_value().try_into()?;
+                let lhs: IntValue<'ctx, IntDyn> = old_inst.as_value().try_into()?;
                 let result = self
                     .builder()?
                     .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "xadd_sum")?;

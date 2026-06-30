@@ -1,6 +1,6 @@
+use bin_lift::compiler;
 use llvmkit::ir::Module;
 use zydis::{Decoder, MachineMode};
-use zydis2llvmir::compiler;
 
 const ADD_BYTES: [u8; 2] = [0x01, 0xD8];
 const MOV_AL_IMM_BYTES: [u8; 2] = [0xB0, 0x01];
