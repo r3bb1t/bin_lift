@@ -27,7 +27,7 @@ pub use address::{AddrRange, Va};
 pub use assume::{AssumptionProvider, MapAssumptions, NoAssumptions, PredicateVerdict};
 pub use event::{BranchKind, Event, EventKind, Events, MemRw, Seg};
 pub use insn::{FakeInsn, InsnView, OperandView};
-pub use ir::{IrBuilder, RecordingBuilder};
+pub use ir::{IcmpPred, IrBuilder, RecordingBuilder};
 pub use lifter::{FakeLifter, Lifter, Transfer};
 pub use memory::{MemoryAttr, MemoryFacts};
 pub use oracle::{NullOracle, Oracle, ScriptedOracle, SnapshotId};
