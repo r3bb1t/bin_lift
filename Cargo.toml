@@ -14,5 +14,5 @@ thiserror = "2"
 zydis = { version = "4.1.1", features = ["default"] }
 
 [workspace]
-members = ["crates/lift-core"]
+members = ["crates/lift-core", "crates/lift-llvmkit"]
 resolver = "2"
