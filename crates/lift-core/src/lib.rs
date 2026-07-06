@@ -11,6 +11,7 @@
 pub mod address;
 pub mod assume;
 pub mod event;
+pub mod ir;
 pub mod memory;
 pub mod protocol;
 pub mod signature;
@@ -18,6 +19,7 @@ pub mod signature;
 pub use address::{AddrRange, Va};
 pub use assume::{AssumptionProvider, MapAssumptions, NoAssumptions, PredicateVerdict};
 pub use event::{BranchKind, Event, EventKind, Events, MemRw, Seg};
+pub use ir::{IrBuilder, RecordingBuilder};
 pub use memory::{MemoryAttr, MemoryFacts};
 pub use protocol::{Answer, Query, ResumeToken, StepOutcome};
 pub use signature::{
