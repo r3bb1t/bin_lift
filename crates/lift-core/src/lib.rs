@@ -9,8 +9,10 @@
 //! heuristic.
 
 pub mod address;
+pub mod memory;
 
 pub use address::{AddrRange, Va};
+pub use memory::{MemoryAttr, MemoryFacts};
 
 #[cfg(test)]
 mod tests {
