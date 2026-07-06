@@ -8,6 +8,10 @@
 //! always follows `AssumptionProvider` -> `Oracle` -> suspend, never a built-in
 //! heuristic.
 
+pub mod address;
+
+pub use address::{AddrRange, Va};
+
 #[cfg(test)]
 mod tests {
     #[test]
