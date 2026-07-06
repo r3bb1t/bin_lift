@@ -13,6 +13,7 @@ pub mod assume;
 pub mod event;
 pub mod insn;
 pub mod ir;
+pub mod lifter;
 pub mod memory;
 pub mod oracle;
 pub mod protocol;
@@ -23,6 +24,7 @@ pub use assume::{AssumptionProvider, MapAssumptions, NoAssumptions, PredicateVer
 pub use event::{BranchKind, Event, EventKind, Events, MemRw, Seg};
 pub use insn::{FakeInsn, InsnView, OperandView};
 pub use ir::{IrBuilder, RecordingBuilder};
+pub use lifter::{FakeLifter, Lifter, Transfer};
 pub use memory::{MemoryAttr, MemoryFacts};
 pub use oracle::{NullOracle, Oracle, ScriptedOracle, SnapshotId};
 pub use protocol::{Answer, Query, ResumeToken, StepOutcome};
