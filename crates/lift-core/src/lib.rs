@@ -10,10 +10,12 @@
 
 pub mod address;
 pub mod assume;
+pub mod event;
 pub mod memory;
 
 pub use address::{AddrRange, Va};
 pub use assume::{AssumptionProvider, MapAssumptions, NoAssumptions, PredicateVerdict};
+pub use event::{BranchKind, Event, EventKind, Events, MemRw, Seg};
 pub use memory::{MemoryAttr, MemoryFacts};
 
 #[cfg(test)]
