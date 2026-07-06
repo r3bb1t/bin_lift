@@ -12,11 +12,16 @@ pub mod address;
 pub mod assume;
 pub mod event;
 pub mod memory;
+pub mod signature;
 
 pub use address::{AddrRange, Va};
 pub use assume::{AssumptionProvider, MapAssumptions, NoAssumptions, PredicateVerdict};
 pub use event::{BranchKind, Event, EventKind, Events, MemRw, Seg};
 pub use memory::{MemoryAttr, MemoryFacts};
+pub use signature::{
+    AbiKind, CallEffects, FnSig, MapSignatures, MemEffect, NoSignatures, RegId, RegSet,
+    SignatureProvider,
+};
 
 #[cfg(test)]
 mod tests {
