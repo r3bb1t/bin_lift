@@ -1,0 +1,7 @@
+[package]
+name = "lift-core"
+version = "0.0.1"
+edition = "2021"
+description = "Arch- and backend-agnostic spine for the bin_lift streaming lifter."
+
+[dependencies]
