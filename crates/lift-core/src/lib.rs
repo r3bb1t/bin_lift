@@ -11,6 +11,7 @@
 pub mod address;
 pub mod assume;
 pub mod event;
+pub mod insn;
 pub mod ir;
 pub mod memory;
 pub mod oracle;
@@ -20,6 +21,7 @@ pub mod signature;
 pub use address::{AddrRange, Va};
 pub use assume::{AssumptionProvider, MapAssumptions, NoAssumptions, PredicateVerdict};
 pub use event::{BranchKind, Event, EventKind, Events, MemRw, Seg};
+pub use insn::{FakeInsn, InsnView, OperandView};
 pub use ir::{IrBuilder, RecordingBuilder};
 pub use memory::{MemoryAttr, MemoryFacts};
 pub use oracle::{NullOracle, Oracle, ScriptedOracle, SnapshotId};
