@@ -12,6 +12,7 @@ pub trait OperandView {
 }
 
 /// A read-only view of one decoded instruction.
+#[allow(clippy::len_without_is_empty)]
 pub trait InsnView {
     /// Runtime virtual address of this instruction.
     fn address(&self) -> Va;

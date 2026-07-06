@@ -2,11 +2,14 @@
 
 //! `lift-core` — the arch- and backend-agnostic spine of the bin_lift lifter.
 //!
-//! It defines the seam traits (`IrBuilder`, `MemoryModel`, `AssumptionProvider`,
-//! `Oracle`, `SignatureProvider`, `InsnView`, `Lifter`) and the streaming
-//! [`Session`] engine. The core is assumption-free: control-transfer resolution
-//! always follows `AssumptionProvider` -> `Oracle` -> suspend, never a built-in
-//! heuristic.
+//! # Assumption-free by construction
+//! Control-transfer resolution always follows `AssumptionProvider` -> `Oracle` ->
+//! suspend. The core never applies a built-in packer/OS heuristic; all such
+//! knowledge is caller-declared via [`AssumptionProvider`] and [`MemoryFacts`].
+//!
+//! # Streaming
+//! Drive lifting with [`Session::step`]; answer any [`StepOutcome::Suspend`] with
+//! [`Session::resume`].
 
 pub mod address;
 pub mod assume;
