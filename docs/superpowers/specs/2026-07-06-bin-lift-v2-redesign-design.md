@@ -171,3 +171,13 @@ Each phase is independently testable; phases 2–5 follow strict TDD against the
 - **llvmkit bridge vs. grow-native** for the optimization pipeline (approach: bridge first, grow llvmkit passes in parallel). This is the one place where "llvmkit primary" and "Mergen-style LLVM deobfuscation" are in tension.
 - **Crate granularity** (7 crates may be split further or merged for the first cut — e.g. folding `lift-oracle` into examples initially).
 - **Lifted-function boundary** shape (`(ctx*, mem*) -> i64`, Mergen-style) vs. keeping a flatter register-parameter signature.
+
+## Milestone 1 review — carried-forward decisions
+
+Milestone 1 (`lift-core` spine) is implemented and merged (14 commits; 24 tests; clippy clean). Its whole-branch review surfaced seam decisions to settle in later milestones:
+
+- **Multi-target branch events (decide before Milestone 7 / `lift-ffi`).** `EventKind::Branch` is single-target (`to: Va`), but indirect transfers are inherently multi-target — `finish_indirect`'s `>1` case emits a correct `switch` in IR yet reports only `targets[0]` in the feedback event. Before `lift-ffi` freezes the `#[repr(C)]` event mirror, add an `EventKind::IndirectBranch { from, targets: Vec<Va> }` (or a `MultiTarget` variant). Changing the event taxonomy after the C-ABI exists is the expensive path.
+- **Extend `Transfer`, don't add a second suspension channel (Milestones 4–5).** `Query` already has `Memory` and `Signature` variants, but `Transfer` has no arm that triggers them and `Session` has no path producing `Suspend(Query::Memory/Signature)` (correct for M1 — data-flow doesn't suspend yet). When memory concretization (M4) and typed calls (M5) land, extend `Transfer` with `ResolveMemory`/`ResolveSignature` arms and add matching `Pending` arms — keep the engine's single suspension channel symmetric.
+- **`MemoryModel` trait is deferred (Milestone 4).** M1 ships only the caller-declared `MemoryFacts` map; the `solve_load`/`solve_store` `MemoryModel` trait seam lands with M4's GEPTracker-style aliasing. Downstream crates cannot yet be written against a memory-model interface.
+- **`Session` needs an ownership-transfer exit (Milestone 2).** M1 exposes `builder()` as `&`-only; M2 will need `fn finish(self) -> L::Builder` (or similar) to extract the built module.
+- **Deferred `lift-core` polish** (revisit when the relevant seam is wired): privatize `AddrRange` fields / guard `len()` underflow; replace `MemoryFacts::attr_at` linear scan with a sorted-interval structure (M4); broaden `CallEffects`/`SignatureProvider` test coverage (M5).
