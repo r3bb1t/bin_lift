@@ -17,6 +17,7 @@ pub mod lifter;
 pub mod memory;
 pub mod oracle;
 pub mod protocol;
+pub mod session;
 pub mod signature;
 
 pub use address::{AddrRange, Va};
@@ -28,6 +29,7 @@ pub use lifter::{FakeLifter, Lifter, Transfer};
 pub use memory::{MemoryAttr, MemoryFacts};
 pub use oracle::{NullOracle, Oracle, ScriptedOracle, SnapshotId};
 pub use protocol::{Answer, Query, ResumeToken, StepOutcome};
+pub use session::Session;
 pub use signature::{
     AbiKind, CallEffects, FnSig, MapSignatures, MemEffect, NoSignatures, RegId, RegSet,
     SignatureProvider,
