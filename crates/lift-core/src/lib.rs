@@ -13,6 +13,7 @@ pub mod assume;
 pub mod event;
 pub mod ir;
 pub mod memory;
+pub mod oracle;
 pub mod protocol;
 pub mod signature;
 
@@ -21,6 +22,7 @@ pub use assume::{AssumptionProvider, MapAssumptions, NoAssumptions, PredicateVer
 pub use event::{BranchKind, Event, EventKind, Events, MemRw, Seg};
 pub use ir::{IrBuilder, RecordingBuilder};
 pub use memory::{MemoryAttr, MemoryFacts};
+pub use oracle::{NullOracle, Oracle, ScriptedOracle, SnapshotId};
 pub use protocol::{Answer, Query, ResumeToken, StepOutcome};
 pub use signature::{
     AbiKind, CallEffects, FnSig, MapSignatures, MemEffect, NoSignatures, RegId, RegSet,
