@@ -3,8 +3,8 @@
 //! is declared, the same input resolves without suspending.
 
 use lift_core::{
-    Answer, FakeInsn, FakeLifter, MapAssumptions, MemoryFacts, NoAssumptions, NullOracle,
-    PredicateVerdict, Query, Session, StepOutcome,
+    Answer, BranchKind, EventKind, FakeInsn, FakeLifter, MapAssumptions, MemoryFacts,
+    NoAssumptions, NullOracle, PredicateVerdict, Query, Session, StepOutcome,
 };
 
 fn make_session_no_facts() -> Session<FakeLifter, NoAssumptions, NullOracle> {
@@ -44,6 +44,15 @@ fn declaring_a_predicate_fact_resolves_without_suspension() {
     match out {
         StepOutcome::BlockEnd(events) => {
             assert_eq!(events.len(), 1);
+            assert_eq!(
+                events[0].kind,
+                EventKind::Branch {
+                    kind: BranchKind::Conditional,
+                    from: 0x30,
+                    to: 0x40,
+                    taken: true,
+                }
+            );
         }
         StepOutcome::Suspend(..) => panic!("declared fact should have prevented suspension"),
         other => panic!("unexpected outcome {other:?}"),

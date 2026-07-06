@@ -69,5 +69,13 @@ mod tests {
         let q = Query::BranchVerdict { site: 0x10, taken_target: 0x20, fallthrough: 0x14 };
         assert!(q.accepts(&Answer::BranchVerdict { taken: false }));
         assert!(!q.accepts(&Answer::Memory(vec![])));
+
+        let q = Query::Memory { addr: 0x10, size: 4 };
+        assert!(q.accepts(&Answer::Memory(vec![0u8; 4])));
+        assert!(!q.accepts(&Answer::Targets(vec![])));
+
+        let q = Query::Signature { target: 0x10 };
+        assert!(q.accepts(&Answer::Signature(None)));
+        assert!(!q.accepts(&Answer::BranchVerdict { taken: true }));
     }
 }

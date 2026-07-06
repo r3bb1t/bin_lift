@@ -136,6 +136,7 @@ impl<L: Lifter, A: AssumptionProvider, O: Oracle> Session<L, A, O> {
     }
 
     fn finish_static(&mut self, from: Va, kind: BranchKind, to: Va, taken: bool) -> StepOutcome {
+        // M1 records the address op for the builder-log tests; M2 wires this value into the real terminator.
         let v = self.builder.const_addr(to);
         let block = self.builder.new_block("target");
         self.builder.br(&block);

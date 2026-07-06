@@ -62,6 +62,7 @@ impl Oracle for ScriptedOracle {
         self.indirects.get(&site).cloned()
     }
 
+    /// Returns the whole scripted blob for `addr`; the requested `size` is ignored.
     fn read_memory(&mut self, addr: Va, _size: u32) -> Option<Vec<u8>> {
         self.memory.get(&addr).cloned()
     }
