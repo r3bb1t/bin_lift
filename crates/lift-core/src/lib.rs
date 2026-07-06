@@ -9,9 +9,11 @@
 //! heuristic.
 
 pub mod address;
+pub mod assume;
 pub mod memory;
 
 pub use address::{AddrRange, Va};
+pub use assume::{AssumptionProvider, MapAssumptions, NoAssumptions, PredicateVerdict};
 pub use memory::{MemoryAttr, MemoryFacts};
 
 #[cfg(test)]
