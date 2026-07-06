@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 llvmkit = "=0.0.3"
+lift-core = { path = "../lift-core" }

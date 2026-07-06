@@ -120,6 +120,7 @@ version = "0.0.1"
 name = "lift-llvmkit"
 version = "0.0.1"
 dependencies = [
+ "lift-core",
  "llvmkit",
 ]
 
