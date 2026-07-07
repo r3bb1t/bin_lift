@@ -14,10 +14,10 @@
 //! that need to assert a real instruction must feed non-constant operands
 //! (function parameters, loaded values, etc.).
 
-use lift_core::{IrBuilder, Va};
+use lift_core::{IcmpPred, IrBuilder, Va};
 use llvmkit::ir::{
-    BasicBlock, BasicBlockLabel, ConstantFolder, Dyn, FunctionValue, IRBuilder, Module,
-    Positioned, Unverified, Value,
+    BasicBlock, BasicBlockLabel, ConstantFolder, Dyn, FunctionValue, IRBuilder, IntDyn, IntValue,
+    Module, Positioned, Unverified, Value,
 };
 
 /// A control-flow/data-flow IR backend that emits `llvmkit` IR for a single
@@ -64,6 +64,15 @@ impl<'m, 'ctx, B: llvmkit::ir::ModuleBrand + 'ctx> LlvmkitBuilder<'m, 'ctx, B> {
     fn take_builder(&mut self) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Positioned, Dyn> {
         self.builder
             .take()
+            .expect("LlvmkitBuilder: no positioned builder (call position_at first)")
+    }
+
+    /// Borrow the positioned builder, expecting it to be present. Used for
+    /// non-terminator data-flow ops (`build_int_*_dyn` etc.), which take
+    /// `&self` and leave the builder positioned for the next instruction.
+    fn builder(&self) -> &IRBuilder<'m, 'ctx, B, ConstantFolder, Positioned, Dyn> {
+        self.builder
+            .as_ref()
             .expect("LlvmkitBuilder: no positioned builder (call position_at first)")
     }
 }
@@ -134,5 +143,139 @@ impl<'m, 'ctx, B: llvmkit::ir::ModuleBrand + 'ctx> IrBuilder for LlvmkitBuilder<
     fn unreachable(&mut self) {
         let b = self.take_builder();
         b.build_unreachable();
+    }
+
+    fn const_int(&mut self, width: u32, value: u64) -> Self::Value {
+        self.module
+            .custom_width_int_type(width)
+            .expect("const_int: valid int width")
+            .const_int_checked(value as i64)
+            .expect("const_int: value fits in width")
+            .as_value()
+    }
+
+    fn const_zero(&mut self, width: u32) -> Self::Value {
+        self.module
+            .custom_width_int_type(width)
+            .expect("const_zero: valid int width")
+            .const_zero()
+            .as_value()
+    }
+
+    fn const_ones(&mut self, width: u32) -> Self::Value {
+        self.module
+            .custom_width_int_type(width)
+            .expect("const_ones: valid int width")
+            .const_all_ones()
+            .as_value()
+    }
+
+    fn iadd(&mut self, a: Self::Value, b: Self::Value) -> Self::Value {
+        self.builder()
+            .build_int_add_dyn(a, b, "")
+            .expect("iadd: build_int_add_dyn")
+    }
+
+    fn isub(&mut self, a: Self::Value, b: Self::Value) -> Self::Value {
+        self.builder()
+            .build_int_sub_dyn(a, b, "")
+            .expect("isub: build_int_sub_dyn")
+    }
+
+    fn imul(&mut self, a: Self::Value, b: Self::Value) -> Self::Value {
+        self.builder()
+            .build_int_mul_dyn(a, b, "")
+            .expect("imul: build_int_mul_dyn")
+    }
+
+    fn and(&mut self, a: Self::Value, b: Self::Value) -> Self::Value {
+        self.builder()
+            .build_int_and_dyn(a, b, "")
+            .expect("and: build_int_and_dyn")
+    }
+
+    fn or(&mut self, a: Self::Value, b: Self::Value) -> Self::Value {
+        self.builder()
+            .build_int_or_dyn(a, b, "")
+            .expect("or: build_int_or_dyn")
+    }
+
+    fn xor(&mut self, a: Self::Value, b: Self::Value) -> Self::Value {
+        self.builder()
+            .build_int_xor_dyn(a, b, "")
+            .expect("xor: build_int_xor_dyn")
+    }
+
+    fn not(&mut self, a: Self::Value) -> Self::Value {
+        // No dedicated `not` opcode in LLVM IR: synthesize `xor a, -1`.
+        let width = IntValue::<IntDyn, B>::try_from(a)
+            .expect("not: operand must be an integer")
+            .ty()
+            .bit_width();
+        let ones = self.const_ones(width);
+        self.builder()
+            .build_int_xor_dyn(a, ones, "")
+            .expect("not: build_int_xor_dyn")
+    }
+
+    fn shl(&mut self, a: Self::Value, b: Self::Value) -> Self::Value {
+        self.builder()
+            .build_int_shl_dyn(a, b, "")
+            .expect("shl: build_int_shl_dyn")
+    }
+
+    fn lshr(&mut self, a: Self::Value, b: Self::Value) -> Self::Value {
+        self.builder()
+            .build_int_lshr_dyn(a, b, "")
+            .expect("lshr: build_int_lshr_dyn")
+    }
+
+    fn ashr(&mut self, a: Self::Value, b: Self::Value) -> Self::Value {
+        self.builder()
+            .build_int_ashr_dyn(a, b, "")
+            .expect("ashr: build_int_ashr_dyn")
+    }
+
+    fn urem(&mut self, a: Self::Value, b: Self::Value) -> Self::Value {
+        // No dyn form for urem: round-trip operands to `IntValue<IntDyn>`
+        // and call the typed builder with `W = IntDyn`.
+        let a = IntValue::<IntDyn, B>::try_from(a).expect("urem: lhs must be an integer");
+        let b = IntValue::<IntDyn, B>::try_from(b).expect("urem: rhs must be an integer");
+        self.builder()
+            .build_int_urem::<IntDyn, _, _, _>(a, b, "")
+            .expect("urem: build_int_urem")
+            .as_value()
+    }
+
+    fn icmp(&mut self, _pred: IcmpPred, _a: Self::Value, _b: Self::Value) -> Self::Value {
+        todo!("Task 5")
+    }
+
+    fn zext(&mut self, _value: Self::Value, _width: u32) -> Self::Value {
+        todo!("Task 5")
+    }
+
+    fn sext(&mut self, _value: Self::Value, _width: u32) -> Self::Value {
+        todo!("Task 5")
+    }
+
+    fn trunc(&mut self, _value: Self::Value, _width: u32) -> Self::Value {
+        todo!("Task 5")
+    }
+
+    fn zext_or_trunc(&mut self, _value: Self::Value, _width: u32) -> Self::Value {
+        todo!("Task 5")
+    }
+
+    fn select(&mut self, _cond: Self::Value, _a: Self::Value, _b: Self::Value) -> Self::Value {
+        todo!("Task 5")
+    }
+
+    fn load(&mut self, _addr: Self::Value, _width: u32) -> Self::Value {
+        todo!("Task 6")
+    }
+
+    fn store(&mut self, _addr: Self::Value, _value: Self::Value) {
+        todo!("Task 6")
     }
 }
