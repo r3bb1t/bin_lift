@@ -16,9 +16,26 @@
 
 use lift_core::{IcmpPred, IrBuilder, Va};
 use llvmkit::ir::{
-    BasicBlock, BasicBlockLabel, ConstantFolder, Dyn, FunctionValue, IRBuilder, IntDyn, IntValue,
-    Module, Positioned, Unverified, Value,
+    BasicBlock, BasicBlockLabel, ConstantFolder, Dyn, FunctionValue, IRBuilder, IntDyn,
+    IntPredicate, IntValue, Module, Positioned, Unverified, Value,
 };
+
+/// Map `lift_core::IcmpPred` to `llvmkit::ir::IntPredicate`. The two enums
+/// mirror each other one-for-one (see `IcmpPred`'s doc comment).
+fn to_llvmkit_pred(pred: IcmpPred) -> IntPredicate {
+    match pred {
+        IcmpPred::Eq => IntPredicate::Eq,
+        IcmpPred::Ne => IntPredicate::Ne,
+        IcmpPred::Ult => IntPredicate::Ult,
+        IcmpPred::Ule => IntPredicate::Ule,
+        IcmpPred::Ugt => IntPredicate::Ugt,
+        IcmpPred::Uge => IntPredicate::Uge,
+        IcmpPred::Slt => IntPredicate::Slt,
+        IcmpPred::Sle => IntPredicate::Sle,
+        IcmpPred::Sgt => IntPredicate::Sgt,
+        IcmpPred::Sge => IntPredicate::Sge,
+    }
+}
 
 /// A control-flow/data-flow IR backend that emits `llvmkit` IR for a single
 /// function.
@@ -74,6 +91,47 @@ impl<'m, 'ctx, B: llvmkit::ir::ModuleBrand + 'ctx> LlvmkitBuilder<'m, 'ctx, B> {
         self.builder
             .as_ref()
             .expect("LlvmkitBuilder: no positioned builder (call position_at first)")
+    }
+
+    /// Shared width-branch for `zext`/`sext`/`trunc`/`zext_or_trunc`:
+    /// strictly narrower than the operand's runtime width truncates,
+    /// strictly wider extends (via `widen`), and equal width passes the
+    /// input through unchanged (llvmkit's typed cast builders reject
+    /// equal-width trunc/zext/sext, so this branch is on us).
+    fn cast_to_width(
+        &self,
+        value: Value<'ctx, B>,
+        width: u32,
+        widen: impl FnOnce(
+            &IRBuilder<'m, 'ctx, B, ConstantFolder, Positioned, Dyn>,
+            IntValue<'ctx, IntDyn, B>,
+            llvmkit::ir::IntType<'ctx, IntDyn, B>,
+        ) -> llvmkit::ir::IrResult<IntValue<'ctx, IntDyn, B>>,
+    ) -> Value<'ctx, B> {
+        let iv = IntValue::<IntDyn, B>::try_from(value).expect("cast: operand must be an integer");
+        let src_width = iv.ty().bit_width();
+        match width.cmp(&src_width) {
+            std::cmp::Ordering::Less => {
+                let dst_ty = self
+                    .module
+                    .custom_width_int_type(width)
+                    .expect("cast: valid destination int width");
+                self.builder()
+                    .build_trunc_dyn(iv, dst_ty, "")
+                    .expect("cast: build_trunc_dyn")
+                    .as_value()
+            }
+            std::cmp::Ordering::Greater => {
+                let dst_ty = self
+                    .module
+                    .custom_width_int_type(width)
+                    .expect("cast: valid destination int width");
+                widen(self.builder(), iv, dst_ty)
+                    .expect("cast: widen")
+                    .as_value()
+            }
+            std::cmp::Ordering::Equal => value,
+        }
     }
 }
 
@@ -247,28 +305,46 @@ impl<'m, 'ctx, B: llvmkit::ir::ModuleBrand + 'ctx> IrBuilder for LlvmkitBuilder<
             .as_value()
     }
 
-    fn icmp(&mut self, _pred: IcmpPred, _a: Self::Value, _b: Self::Value) -> Self::Value {
-        todo!("Task 5")
+    fn icmp(&mut self, pred: IcmpPred, a: Self::Value, b: Self::Value) -> Self::Value {
+        // No dyn form for icmp: round-trip operands to `IntValue<IntDyn>` and
+        // call the typed builder with `W = IntDyn`. Result is `IntValue<bool>`
+        // (i1); erase it back to `Value`.
+        let a = IntValue::<IntDyn, B>::try_from(a).expect("icmp: lhs must be an integer");
+        let b = IntValue::<IntDyn, B>::try_from(b).expect("icmp: rhs must be an integer");
+        self.builder()
+            .build_int_cmp::<IntDyn, _, _, _>(to_llvmkit_pred(pred), a, b, "")
+            .expect("icmp: build_int_cmp")
+            .as_value()
     }
 
-    fn zext(&mut self, _value: Self::Value, _width: u32) -> Self::Value {
-        todo!("Task 5")
+    fn zext(&mut self, value: Self::Value, width: u32) -> Self::Value {
+        self.cast_to_width(value, width, |b, iv, dst_ty| b.build_zext_dyn(iv, dst_ty, ""))
     }
 
-    fn sext(&mut self, _value: Self::Value, _width: u32) -> Self::Value {
-        todo!("Task 5")
+    fn sext(&mut self, value: Self::Value, width: u32) -> Self::Value {
+        self.cast_to_width(value, width, |b, iv, dst_ty| b.build_sext_dyn(iv, dst_ty, ""))
     }
 
-    fn trunc(&mut self, _value: Self::Value, _width: u32) -> Self::Value {
-        todo!("Task 5")
+    fn trunc(&mut self, value: Self::Value, width: u32) -> Self::Value {
+        self.cast_to_width(value, width, |_, _, _| {
+            panic!("trunc: width is wider than operand (caller bug: use zext/sext instead)")
+        })
     }
 
-    fn zext_or_trunc(&mut self, _value: Self::Value, _width: u32) -> Self::Value {
-        todo!("Task 5")
+    fn zext_or_trunc(&mut self, value: Self::Value, width: u32) -> Self::Value {
+        self.cast_to_width(value, width, |b, iv, dst_ty| b.build_zext_dyn(iv, dst_ty, ""))
     }
 
-    fn select(&mut self, _cond: Self::Value, _a: Self::Value, _b: Self::Value) -> Self::Value {
-        todo!("Task 5")
+    fn select(&mut self, cond: Self::Value, a: Self::Value, b: Self::Value) -> Self::Value {
+        // `cond` (an erased `Value`) round-trips into `IntValue<bool>` via
+        // the `IntoIntValue<'ctx, bool, B>` blanket impl for `Value`, so it
+        // can be passed straight through as `C` without a manual conversion.
+        let a = IntValue::<IntDyn, B>::try_from(a).expect("select: true arm must be an integer");
+        let b = IntValue::<IntDyn, B>::try_from(b).expect("select: false arm must be an integer");
+        self.builder()
+            .build_select::<_, IntValue<'ctx, IntDyn, B>, _>(cond, a, b, "")
+            .expect("select: build_select")
+            .as_value()
     }
 
     fn load(&mut self, _addr: Self::Value, _width: u32) -> Self::Value {
