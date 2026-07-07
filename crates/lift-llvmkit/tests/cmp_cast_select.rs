@@ -224,6 +224,39 @@ entry:
     assert_eq!(ll, expected);
 }
 
+/// `zext_or_trunc` narrowing (i64 -> i32): behaves like `trunc`, one real
+/// instruction. Closes the cast matrix alongside the widening and
+/// equal-width goldens above.
+#[test]
+fn zext_or_trunc_narrows_like_trunc() {
+    let ll = Module::with_new("cast_zot_narrow", |m| {
+        let typed = m.add_typed_function::<i32, (i64,), _>("zot_narrow_fn", Linkage::External)?;
+        let (x,) = typed.params();
+        let f = typed.as_function().as_dyn();
+
+        let mut b = LlvmkitBuilder::new(&m, f);
+        let entry = b.new_block("entry");
+        b.position_at(&entry);
+        let r = b.zext_or_trunc(x.as_value(), 32);
+        b.ret(r);
+
+        Ok::<String, IrError>(b.finish())
+    })
+    .expect("zext_or_trunc narrow build should succeed");
+
+    println!("=== zext_or_trunc_narrow.ll ===\n{ll}");
+
+    let expected = "\
+; ModuleID = 'cast_zot_narrow'
+define i32 @zot_narrow_fn(i64 %0) {
+entry:
+  %1 = trunc i64 %0 to i32
+  ret i32 %1
+}
+";
+    assert_eq!(ll, expected);
+}
+
 /// `zext_or_trunc` at equal width (i64 -> i64) must emit NO cast
 /// instruction: the value passes through unchanged.
 #[test]

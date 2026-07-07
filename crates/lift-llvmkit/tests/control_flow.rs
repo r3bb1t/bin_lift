@@ -157,3 +157,54 @@ default:
 ";
     assert_eq!(ll, expected);
 }
+
+/// `unreachable`: an entry block whose only instruction is the
+/// `unreachable` terminator (last previously-uncovered terminator in the
+/// `IrBuilder` surface).
+#[test]
+fn unreachable_is_sole_entry_terminator() {
+    let ll = Module::with_new("cf_unreachable", |m| {
+        let typed = m.add_typed_function::<(), (), _>("trap", Linkage::External)?;
+        let f = typed.as_function().as_dyn();
+
+        let mut b = LlvmkitBuilder::new(&m, f);
+        let entry = b.new_block("entry");
+
+        b.position_at(&entry);
+        b.unreachable();
+
+        Ok::<String, IrError>(b.finish())
+    })
+    .expect("unreachable build should succeed");
+
+    println!("=== unreachable.ll ===\n{ll}");
+
+    let expected = "\
+; ModuleID = 'cf_unreachable'
+define void @trap() {
+entry:
+  unreachable
+}
+";
+    assert_eq!(ll, expected);
+}
+
+/// Pins the single-shot `position_at` invariant documented on
+/// `LlvmkitBuilder::position_at`: positioning the SAME block a second time
+/// must panic rather than silently letting a terminated block be re-entered.
+#[test]
+#[should_panic(expected = "position_at: block already positioned (or invalid index)")]
+fn position_at_same_block_twice_panics() {
+    let _ = Module::with_new("cf_reposition_panics", |m| {
+        let typed = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
+        let f = typed.as_function().as_dyn();
+
+        let mut b = LlvmkitBuilder::new(&m, f);
+        let entry = b.new_block("entry");
+
+        b.position_at(&entry);
+        b.position_at(&entry); // second call on the same block: must panic
+
+        Ok::<String, IrError>(b.finish())
+    });
+}

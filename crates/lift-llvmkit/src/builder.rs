@@ -91,7 +91,9 @@ fn to_llvmkit_pred(pred: IcmpPred) -> IntPredicate {
 /// since llvmkit's terminator-emitting `build_*` methods consume the builder
 /// by value. `position_at` replaces it with a fresh, freshly-positioned
 /// builder; terminators `take()` it out, emit, and leave `None` until the
-/// next `position_at`.
+/// next `position_at`. See [`LlvmkitBuilder::position_at`]'s doc comment
+/// (via its `IrBuilder` impl) for the single-shot-per-block invariant this
+/// implies.
 ///
 /// `load`/`store` are *flat* raw memory ops: an address `Value` is
 /// `inttoptr`'d to the module's opaque pointer type and read/written
@@ -204,6 +206,22 @@ impl<'m, 'ctx, B: llvmkit::ir::ModuleBrand + 'ctx> IrBuilder for LlvmkitBuilder<
         idx
     }
 
+    /// Positions the builder at `block`, ready to append instructions.
+    ///
+    /// # Single-shot invariant
+    ///
+    /// Each block is positioned exactly once and then terminated; a block
+    /// cannot be re-entered/appended-to after positioning. This mirrors
+    /// llvmkit's own `BasicBlock`/`position_at_end` contract (`BasicBlock` is
+    /// `!Copy` and consumed by value here), so it isn't a restriction
+    /// `LlvmkitBuilder` invents — it's inherited and simply enforced early
+    /// with a clear message.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `position_at` is called twice on the same block (or with an
+    /// invalid index): the second call finds `self.blocks[*block]` already
+    /// `None` from the first `.take()`.
     fn position_at(&mut self, block: &Self::Block) {
         let bb = self.blocks[*block]
             .take()
@@ -224,6 +242,12 @@ impl<'m, 'ctx, B: llvmkit::ir::ModuleBrand + 'ctx> IrBuilder for LlvmkitBuilder<
 
     fn switch(&mut self, scrutinee: Self::Value, default: &Self::Block, cases: &[(Va, Self::Block)]) {
         let b = self.take_builder();
+        // `_bb` is the now-sealed/terminated parent block (the one `switch`
+        // was just emitted into) — llvmkit hands it back so callers can
+        // inspect the sealed block, but `LlvmkitBuilder` has no use for it
+        // (it never re-enters a positioned block; see `position_at`'s
+        // single-shot invariant), so discarding it is correct. `sw.finish()`
+        // below is what actually retags/finalizes the switch instruction.
         let (_bb, mut sw) = b
             .build_switch(scrutinee, self.labels[*default], "")
             .expect("switch: build_switch");
