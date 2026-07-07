@@ -16,9 +16,52 @@
 
 use lift_core::{IcmpPred, IrBuilder, Va};
 use llvmkit::ir::{
-    BasicBlock, BasicBlockLabel, ConstantFolder, Dyn, FunctionValue, IRBuilder, IntDyn,
-    IntPredicate, IntValue, Module, Positioned, Unverified, Value,
+    BasicBlock, BasicBlockLabel, ConstantFolder, Dyn, FunctionParamList, FunctionReturn,
+    FunctionValue, IRBuilder, IntDyn, IntPredicate, IntValue, Linkage, Module, Positioned,
+    Unverified, Value,
 };
+
+/// Ergonomic entry point wrapping [`Module::with_new`]: creates the module,
+/// declares a single typed function `name: (Params) -> Ret`, wraps it in a
+/// [`LlvmkitBuilder`], and hands `(builder, params)` to `f` — the typed
+/// parameter tuple exactly as `TypedFunctionValue::params()` would produce.
+/// Returns whatever `f` returns, out of the brand-scoped closure (typically a
+/// `String` from [`LlvmkitBuilder::finish`], or an `IrResult<()>` from
+/// `Module::verify_borrowed`).
+///
+/// This only covers the common "one function per module" shape used by the
+/// golden tests; multi-function modules or callers who need the `Module`
+/// itself in scope should call `Module::with_new` + `LlvmkitBuilder::new`
+/// directly (see the crate-level docs).
+///
+/// # Panics
+///
+/// Panics if the function declaration itself fails (e.g. an invalid
+/// signature) — this mirrors the backend's own convention of `.expect()`ing
+/// construction errors, which indicate a caller bug rather than a recoverable
+/// condition.
+pub fn build_module<Ret, Params, R>(
+    module_name: &str,
+    fn_name: &str,
+    f: impl for<'brand> FnOnce(
+        &mut LlvmkitBuilder<'_, 'brand, llvmkit::ir::Brand<'brand>>,
+        Params::Values<'brand, llvmkit::ir::Brand<'brand>>,
+    ) -> R,
+) -> R
+where
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+{
+    Module::with_new(module_name, |m| {
+        let typed = m
+            .add_typed_function::<Ret, Params, _>(fn_name, Linkage::External)
+            .expect("build_module: function declaration");
+        let params = typed.params();
+        let func = typed.as_function().as_dyn();
+        let mut b = LlvmkitBuilder::new(&m, func);
+        f(&mut b, params)
+    })
+}
 
 /// Map `lift_core::IcmpPred` to `llvmkit::ir::IntPredicate`. The two enums
 /// mirror each other one-for-one (see `IcmpPred`'s doc comment).
