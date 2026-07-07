@@ -15,6 +15,10 @@
 //! away before becoming an instruction; golden `.ll` tests must use
 //! non-constant operands (function parameters, loaded values) to see a real
 //! instruction emitted.
+//!
+//! `load`/`store` are minimal *flat* raw memory primitives (`inttoptr` +
+//! `load`/`store`, no aliasing model); a `MemoryModel`/`solve_load` layer on
+//! top is deferred to Milestone 4.
 
 mod builder;
 

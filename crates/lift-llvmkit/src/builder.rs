@@ -49,6 +49,11 @@ fn to_llvmkit_pred(pred: IcmpPred) -> IntPredicate {
 /// by value. `position_at` replaces it with a fresh, freshly-positioned
 /// builder; terminators `take()` it out, emit, and leave `None` until the
 /// next `position_at`.
+///
+/// `load`/`store` are *flat* raw memory ops: an address `Value` is
+/// `inttoptr`'d to the module's opaque pointer type and read/written
+/// directly, with no aliasing model. A `MemoryModel`/`solve_load`-style
+/// aliasing layer on top of this is deferred to Milestone 4.
 pub struct LlvmkitBuilder<'m, 'ctx, B: llvmkit::ir::ModuleBrand + 'ctx> {
     module: &'m Module<'ctx, B, Unverified>,
     func: FunctionValue<'ctx, Dyn, B>,
@@ -347,11 +352,37 @@ impl<'m, 'ctx, B: llvmkit::ir::ModuleBrand + 'ctx> IrBuilder for LlvmkitBuilder<
             .as_value()
     }
 
-    fn load(&mut self, _addr: Self::Value, _width: u32) -> Self::Value {
-        todo!("Task 6")
+    fn load(&mut self, addr: Self::Value, width: u32) -> Self::Value {
+        // Flat raw load: `inttoptr` the address to the module's opaque
+        // pointer type, then `load <width>, ptr <p>`. No aliasing model here
+        // (see the module-level doc comment); that's `MemoryModel`/
+        // `solve_load`, deferred to M4.
+        let addr = IntValue::<IntDyn, B>::try_from(addr).expect("load: address must be an integer");
+        let ptr_ty = self.module.ptr_type(0);
+        let p = self
+            .builder()
+            .build_int_to_ptr::<IntDyn, _>(addr, ptr_ty, "p")
+            .expect("load: build_int_to_ptr");
+        let ty = self
+            .module
+            .custom_width_int_type(width)
+            .expect("load: valid int width");
+        self.builder()
+            .build_load(ty, p, "r")
+            .expect("load: build_load")
     }
 
-    fn store(&mut self, _addr: Self::Value, _value: Self::Value) {
-        todo!("Task 6")
+    fn store(&mut self, addr: Self::Value, value: Self::Value) {
+        // Flat raw store: `inttoptr` the address, then `store <value>, ptr
+        // <p>`. Same caveat as `load` above — no aliasing model yet (M4).
+        let addr = IntValue::<IntDyn, B>::try_from(addr).expect("store: address must be an integer");
+        let ptr_ty = self.module.ptr_type(0);
+        let p = self
+            .builder()
+            .build_int_to_ptr::<IntDyn, _>(addr, ptr_ty, "p")
+            .expect("store: build_int_to_ptr");
+        self.builder()
+            .build_store(value, p)
+            .expect("store: build_store");
     }
 }
