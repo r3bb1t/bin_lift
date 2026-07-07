@@ -4,7 +4,7 @@
 
 use crate::event::BranchKind;
 use crate::insn::InsnView;
-use crate::ir::{IrBuilder, RecordingBuilder};
+use crate::ir::IrBuilder;
 use crate::address::Va;
 
 /// What an instruction does to control flow, reported after its body is lifted.
@@ -26,11 +26,19 @@ pub enum Transfer {
     End,
 }
 
-/// Translates one instruction into IR + a terminal `Transfer`.
-pub trait Lifter {
-    type Builder: IrBuilder;
-
-    fn lift_body(&mut self, insn: &dyn InsnView, builder: &mut Self::Builder) -> Transfer;
+/// Translates one instruction into IR (via the injected backend `B`) + a
+/// terminal `Transfer`.
+///
+/// The backend is a *type parameter* rather than an associated type so a
+/// single lifter (an x86 semantics table, say) is backend-agnostic: the same
+/// handlers drive `RecordingBuilder` in unit tests and a real
+/// `LlvmkitBuilder` in production. Crucially, this keeps the backend's brand
+/// lifetime off the `Lifter`/`Session` types — the builder is borrowed
+/// per-call (`&mut B`), so it can live entirely inside llvmkit's
+/// `Module::with_new` closure while the `Session` outside it stays
+/// brand-free.
+pub trait Lifter<B: IrBuilder> {
+    fn lift_body(&mut self, insn: &dyn InsnView, builder: &mut B) -> Transfer;
 }
 
 /// A test lifter that decides the `Transfer` from the mnemonic. Recognized forms:
@@ -49,10 +57,8 @@ fn parse_hex(tok: &str) -> Va {
     Va::from_str_radix(t, 16).expect("FakeLifter: bad hex token")
 }
 
-impl Lifter for FakeLifter {
-    type Builder = RecordingBuilder;
-
-    fn lift_body(&mut self, insn: &dyn InsnView, builder: &mut RecordingBuilder) -> Transfer {
+impl<B: IrBuilder> Lifter<B> for FakeLifter {
+    fn lift_body(&mut self, insn: &dyn InsnView, builder: &mut B) -> Transfer {
         let m = insn.mnemonic();
         let parts: Vec<&str> = m.split_whitespace().collect();
         match parts.as_slice() {
@@ -72,9 +78,12 @@ impl Lifter for FakeLifter {
             ["end"] => Transfer::End,
             other => {
                 // Represent an unknown instruction as a no-op body; the engine
-                // treats an unrecognized mnemonic conservatively.
+                // treats an unrecognized mnemonic conservatively. Emit a
+                // backend-visible marker op (a const) so the body isn't
+                // literally empty — kept backend-agnostic (works for any
+                // `IrBuilder`, not just `RecordingBuilder`).
                 let _ = other;
-                builder.log.push(format!("body {m}"));
+                let _ = builder.const_addr(insn.address());
                 Transfer::Fallthrough
             }
         }
@@ -85,6 +94,7 @@ impl Lifter for FakeLifter {
 mod tests {
     use super::*;
     use crate::insn::FakeInsn;
+    use crate::ir::RecordingBuilder;
 
     #[test]
     fn fake_lifter_maps_mnemonics_to_transfers() {

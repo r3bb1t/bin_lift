@@ -4,24 +4,18 @@
 
 use lift_core::{
     Answer, BranchKind, EventKind, FakeInsn, FakeLifter, MapAssumptions, MemoryFacts,
-    NoAssumptions, NullOracle, PredicateVerdict, Query, Session, StepOutcome,
+    NoAssumptions, NullOracle, PredicateVerdict, Query, RecordingBuilder, Session, StepOutcome,
 };
 
 fn make_session_no_facts() -> Session<FakeLifter, NoAssumptions, NullOracle> {
-    Session::new(
-        FakeLifter,
-        lift_core::RecordingBuilder::new(),
-        NoAssumptions,
-        NullOracle,
-        MemoryFacts::new(),
-        0x1000,
-    )
+    Session::new(FakeLifter, NoAssumptions, NullOracle, MemoryFacts::new(), 0x1000)
 }
 
 #[test]
 fn no_facts_forces_suspension_not_assumption() {
     let mut s = make_session_no_facts();
-    let out = s.step(&FakeInsn::with(0x30, 2, "jcc 0x40 0x32"));
+    let mut b = RecordingBuilder::new();
+    let out = s.step(&FakeInsn::with(0x30, 2, "jcc 0x40 0x32"), &mut b);
     match out {
         StepOutcome::Suspend(Query::BranchVerdict { site, .. }, _) => assert_eq!(site, 0x30),
         other => panic!("expected suspension with no facts, got {other:?}"),
@@ -32,15 +26,9 @@ fn no_facts_forces_suspension_not_assumption() {
 fn declaring_a_predicate_fact_resolves_without_suspension() {
     let mut a = MapAssumptions::default();
     a.preds.insert(0x30, PredicateVerdict::AlwaysTaken);
-    let mut s = Session::new(
-        FakeLifter,
-        lift_core::RecordingBuilder::new(),
-        a,
-        NullOracle,
-        MemoryFacts::new(),
-        0x1000,
-    );
-    let out = s.step(&FakeInsn::with(0x30, 2, "jcc 0x40 0x32"));
+    let mut s = Session::new(FakeLifter, a, NullOracle, MemoryFacts::new(), 0x1000);
+    let mut b = RecordingBuilder::new();
+    let out = s.step(&FakeInsn::with(0x30, 2, "jcc 0x40 0x32"), &mut b);
     match out {
         StepOutcome::BlockEnd(events) => {
             assert_eq!(events.len(), 1);
@@ -62,7 +50,8 @@ fn declaring_a_predicate_fact_resolves_without_suspension() {
 #[test]
 fn indirect_with_no_facts_suspends_then_resume_targets() {
     let mut s = make_session_no_facts();
-    let out = s.step(&FakeInsn::with(0x50, 2, "jmp_ind"));
+    let mut b = RecordingBuilder::new();
+    let out = s.step(&FakeInsn::with(0x50, 2, "jmp_ind"), &mut b);
     let token = match out {
         StepOutcome::Suspend(Query::IndirectTargets { site }, tok) => {
             assert_eq!(site, 0x50);
@@ -70,6 +59,6 @@ fn indirect_with_no_facts_suspends_then_resume_targets() {
         }
         other => panic!("expected indirect suspension, got {other:?}"),
     };
-    let out = s.resume(token, Answer::Targets(vec![0x900, 0xa00]));
+    let out = s.resume(&mut b, token, Answer::Targets(vec![0x900, 0xa00]));
     assert!(matches!(out, StepOutcome::BlockEnd(_)));
 }

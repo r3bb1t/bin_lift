@@ -19,9 +19,8 @@ enum Pending {
     Indirect { site: Va },
 }
 
-pub struct Session<L: Lifter, A: AssumptionProvider, O: Oracle> {
+pub struct Session<L, A: AssumptionProvider, O: Oracle> {
     lifter: L,
-    builder: L::Builder,
     assume: A,
     oracle: O,
     facts: MemoryFacts,
@@ -30,11 +29,15 @@ pub struct Session<L: Lifter, A: AssumptionProvider, O: Oracle> {
     next_token: u64,
 }
 
-impl<L: Lifter, A: AssumptionProvider, O: Oracle> Session<L, A, O> {
-    pub fn new(lifter: L, builder: L::Builder, assume: A, oracle: O, facts: MemoryFacts, entry: Va) -> Self {
+impl<L, A: AssumptionProvider, O: Oracle> Session<L, A, O> {
+    /// Build a session. The IR backend is NOT owned here — it is injected
+    /// per call into [`Session::step`]/[`Session::resume`]. This keeps the
+    /// `Session` free of the backend's brand lifetime, so a real
+    /// `LlvmkitBuilder` (whose brand cannot escape `Module::with_new`) can
+    /// live inside that closure while the `Session` is created outside it.
+    pub fn new(lifter: L, assume: A, oracle: O, facts: MemoryFacts, entry: Va) -> Self {
         Self {
             lifter,
-            builder,
             assume,
             oracle,
             facts,
@@ -42,10 +45,6 @@ impl<L: Lifter, A: AssumptionProvider, O: Oracle> Session<L, A, O> {
             pending: None,
             next_token: 0,
         }
-    }
-
-    pub fn builder(&self) -> &L::Builder {
-        &self.builder
     }
 
     pub fn assumptions(&self) -> &A {
@@ -66,42 +65,60 @@ impl<L: Lifter, A: AssumptionProvider, O: Oracle> Session<L, A, O> {
         t
     }
 
-    /// Lift one instruction.
-    pub fn step(&mut self, insn: &dyn InsnView) -> StepOutcome {
+    /// Lift one instruction, emitting IR into the injected backend `builder`.
+    pub fn step<B: IrBuilder>(&mut self, insn: &dyn InsnView, builder: &mut B) -> StepOutcome
+    where
+        L: Lifter<B>,
+    {
         assert!(self.pending.is_none(), "call resume() before step() while suspended");
         let from = insn.address();
-        let transfer = self.lifter.lift_body(insn, &mut self.builder);
+        let transfer = self.lifter.lift_body(insn, builder);
         match transfer {
             Transfer::Fallthrough => StepOutcome::Continue(Vec::new()),
-            Transfer::Static { kind, to, taken } => self.finish_static(from, kind, to, taken),
+            Transfer::Static { kind, to, taken } => self.finish_static(builder, from, kind, to, taken),
             Transfer::ResolveBranch { taken_target, fallthrough } => {
-                self.resolve_branch(from, taken_target, fallthrough)
+                self.resolve_branch(builder, from, taken_target, fallthrough)
             }
-            Transfer::ResolveIndirect { site } => self.resolve_indirect(site),
+            Transfer::ResolveIndirect { site } => self.resolve_indirect(builder, site),
             Transfer::Call { target } => {
                 let ev = Event::new(from, EventKind::Call { from, target });
                 StepOutcome::Continue(vec![ev])
             }
-            Transfer::ReturnTo { to } => self.finish_return(from, to),
+            Transfer::ReturnTo { to } => self.finish_return(builder, from, to),
             Transfer::End => StepOutcome::BlockEnd(Vec::new()),
         }
     }
 
-    /// Answer a suspension and continue.
-    pub fn resume(&mut self, token: ResumeToken, answer: Answer) -> StepOutcome {
+    /// Answer a suspension and continue, emitting any terminator IR into the
+    /// injected `builder`. Pass the SAME backend instance used for the
+    /// `step` that suspended.
+    pub fn resume<B: IrBuilder>(
+        &mut self,
+        builder: &mut B,
+        token: ResumeToken,
+        answer: Answer,
+    ) -> StepOutcome {
         let (expected, pending) = self.pending.take().expect("resume() with no pending suspension");
         assert_eq!(token, expected, "resume token mismatch");
         match (pending, answer) {
             (Pending::Branch { from, taken_target, fallthrough }, Answer::BranchVerdict { taken }) => {
                 let to = if taken { taken_target } else { fallthrough };
-                self.finish_conditional(from, to, taken)
+                self.finish_conditional(builder, from, to, taken)
             }
-            (Pending::Indirect { site }, Answer::Targets(targets)) => self.finish_indirect(site, targets),
+            (Pending::Indirect { site }, Answer::Targets(targets)) => {
+                self.finish_indirect(builder, site, targets)
+            }
             _ => panic!("resume answer does not match pending query"),
         }
     }
 
-    fn resolve_branch(&mut self, from: Va, taken_target: Va, fallthrough: Va) -> StepOutcome {
+    fn resolve_branch<B: IrBuilder>(
+        &mut self,
+        builder: &mut B,
+        from: Va,
+        taken_target: Va,
+        fallthrough: Va,
+    ) -> StepOutcome {
         let taken = match self.assume.predicate(from) {
             PredicateVerdict::AlwaysTaken => Some(true),
             PredicateVerdict::NeverTaken => Some(false),
@@ -110,7 +127,7 @@ impl<L: Lifter, A: AssumptionProvider, O: Oracle> Session<L, A, O> {
         match taken {
             Some(t) => {
                 let to = if t { taken_target } else { fallthrough };
-                self.finish_conditional(from, to, t)
+                self.finish_conditional(builder, from, to, t)
             }
             None => {
                 let token = self.issue_token();
@@ -120,13 +137,13 @@ impl<L: Lifter, A: AssumptionProvider, O: Oracle> Session<L, A, O> {
         }
     }
 
-    fn resolve_indirect(&mut self, site: Va) -> StepOutcome {
+    fn resolve_indirect<B: IrBuilder>(&mut self, builder: &mut B, site: Va) -> StepOutcome {
         let targets = self
             .assume
             .indirect_targets(site)
             .or_else(|| self.oracle.resolve_indirect(site));
         match targets {
-            Some(ts) => self.finish_indirect(site, ts),
+            Some(ts) => self.finish_indirect(builder, site, ts),
             None => {
                 let token = self.issue_token();
                 self.pending = Some((token, Pending::Indirect { site }));
@@ -135,19 +152,32 @@ impl<L: Lifter, A: AssumptionProvider, O: Oracle> Session<L, A, O> {
         }
     }
 
-    fn finish_static(&mut self, from: Va, kind: BranchKind, to: Va, taken: bool) -> StepOutcome {
+    fn finish_static<B: IrBuilder>(
+        &mut self,
+        builder: &mut B,
+        from: Va,
+        kind: BranchKind,
+        to: Va,
+        taken: bool,
+    ) -> StepOutcome {
         // M1 records the address op for the builder-log tests; M2 wires this value into the real terminator.
-        let v = self.builder.const_addr(to);
-        let block = self.builder.new_block("target");
-        self.builder.br(&block);
+        let v = builder.const_addr(to);
+        let block = builder.new_block("target");
+        builder.br(&block);
         let _ = v;
         StepOutcome::BlockEnd(vec![Event::new(from, EventKind::Branch { kind, from, to, taken })])
     }
 
-    fn finish_conditional(&mut self, from: Va, to: Va, taken: bool) -> StepOutcome {
-        let v = self.builder.const_addr(to);
-        let block = self.builder.new_block("target");
-        self.builder.br(&block);
+    fn finish_conditional<B: IrBuilder>(
+        &mut self,
+        builder: &mut B,
+        from: Va,
+        to: Va,
+        taken: bool,
+    ) -> StepOutcome {
+        let v = builder.const_addr(to);
+        let block = builder.new_block("target");
+        builder.br(&block);
         let _ = v;
         StepOutcome::BlockEnd(vec![Event::new(
             from,
@@ -155,14 +185,19 @@ impl<L: Lifter, A: AssumptionProvider, O: Oracle> Session<L, A, O> {
         )])
     }
 
-    fn finish_indirect(&mut self, site: Va, targets: Vec<Va>) -> StepOutcome {
+    fn finish_indirect<B: IrBuilder>(
+        &mut self,
+        builder: &mut B,
+        site: Va,
+        targets: Vec<Va>,
+    ) -> StepOutcome {
         match targets.len() {
             0 => StepOutcome::BlockEnd(vec![Event::new(site, EventKind::Unsupported { addr: site })]),
             1 => {
                 let to = targets[0];
-                let v = self.builder.const_addr(to);
-                let block = self.builder.new_block("indirect_target");
-                self.builder.br(&block);
+                let v = builder.const_addr(to);
+                let block = builder.new_block("indirect_target");
+                builder.br(&block);
                 let _ = v;
                 StepOutcome::BlockEnd(vec![Event::new(
                     site,
@@ -170,13 +205,13 @@ impl<L: Lifter, A: AssumptionProvider, O: Oracle> Session<L, A, O> {
                 )])
             }
             _ => {
-                let scrut = self.builder.const_addr(site);
-                let default = self.builder.new_block("switch_default");
-                let cases: Vec<(Va, <L::Builder as IrBuilder>::Block)> = targets
+                let scrut = builder.const_addr(site);
+                let default = builder.new_block("switch_default");
+                let cases: Vec<(Va, B::Block)> = targets
                     .iter()
-                    .map(|&t| (t, self.builder.new_block("case")))
+                    .map(|&t| (t, builder.new_block("case")))
                     .collect();
-                self.builder.switch(scrut, &default, &cases);
+                builder.switch(scrut, &default, &cases);
                 StepOutcome::BlockEnd(vec![Event::new(
                     site,
                     EventKind::Branch { kind: BranchKind::Indirect, from: site, to: targets[0], taken: true },
@@ -185,9 +220,9 @@ impl<L: Lifter, A: AssumptionProvider, O: Oracle> Session<L, A, O> {
         }
     }
 
-    fn finish_return(&mut self, from: Va, to: Va) -> StepOutcome {
-        let v = self.builder.const_addr(to);
-        self.builder.ret(v);
+    fn finish_return<B: IrBuilder>(&mut self, builder: &mut B, from: Va, to: Va) -> StepOutcome {
+        let v = builder.const_addr(to);
+        builder.ret(v);
         StepOutcome::BlockEnd(vec![Event::new(from, EventKind::Return { from, to })])
     }
 }
@@ -202,27 +237,22 @@ mod tests {
     use crate::oracle::{NullOracle, ScriptedOracle};
 
     fn bare_session() -> Session<FakeLifter, NoAssumptions, NullOracle> {
-        Session::new(
-            FakeLifter,
-            RecordingBuilder::new(),
-            NoAssumptions,
-            NullOracle,
-            MemoryFacts::new(),
-            0x1000,
-        )
+        Session::new(FakeLifter, NoAssumptions, NullOracle, MemoryFacts::new(), 0x1000)
     }
 
     #[test]
     fn nop_continues_without_events() {
         let mut s = bare_session();
-        let out = s.step(&FakeInsn::nop(0x1000));
+        let mut b = RecordingBuilder::new();
+        let out = s.step(&FakeInsn::nop(0x1000), &mut b);
         assert_eq!(out, StepOutcome::Continue(Vec::new()));
     }
 
     #[test]
     fn direct_jump_emits_branch_and_block_end() {
         let mut s = bare_session();
-        let out = s.step(&FakeInsn::with(0x1000, 5, "jmp 0x2000"));
+        let mut b = RecordingBuilder::new();
+        let out = s.step(&FakeInsn::with(0x1000, 5, "jmp 0x2000"), &mut b);
         assert_eq!(
             out,
             StepOutcome::BlockEnd(vec![Event::new(
@@ -235,14 +265,15 @@ mod tests {
                 },
             )])
         );
-        assert!(s.builder().log.iter().any(|l| l == "const 0x2000"));
+        assert!(b.log.iter().any(|l| l == "const 0x2000"));
     }
 
     #[test]
     fn conditional_branch_with_no_facts_suspends_then_resumes() {
         let mut s = bare_session();
+        let mut b = RecordingBuilder::new();
         // jcc taken=0x40 fallthrough=0x32 at 0x30
-        let out = s.step(&FakeInsn::with(0x30, 2, "jcc 0x40 0x32"));
+        let out = s.step(&FakeInsn::with(0x30, 2, "jcc 0x40 0x32"), &mut b);
         let token = match out {
             StepOutcome::Suspend(Query::BranchVerdict { site, taken_target, fallthrough }, tok) => {
                 assert_eq!((site, taken_target, fallthrough), (0x30, 0x40, 0x32));
@@ -250,7 +281,7 @@ mod tests {
             }
             other => panic!("expected suspend, got {other:?}"),
         };
-        let out = s.resume(token, Answer::BranchVerdict { taken: true });
+        let out = s.resume(&mut b, token, Answer::BranchVerdict { taken: true });
         assert_eq!(
             out,
             StepOutcome::BlockEnd(vec![Event::new(
@@ -264,15 +295,9 @@ mod tests {
     fn conditional_branch_resolved_by_declared_predicate_does_not_suspend() {
         let mut a = MapAssumptions::default();
         a.preds.insert(0x30, PredicateVerdict::NeverTaken);
-        let mut s = Session::new(
-            FakeLifter,
-            RecordingBuilder::new(),
-            a,
-            NullOracle,
-            MemoryFacts::new(),
-            0x1000,
-        );
-        let out = s.step(&FakeInsn::with(0x30, 2, "jcc 0x40 0x32"));
+        let mut s = Session::new(FakeLifter, a, NullOracle, MemoryFacts::new(), 0x1000);
+        let mut b = RecordingBuilder::new();
+        let out = s.step(&FakeInsn::with(0x30, 2, "jcc 0x40 0x32"), &mut b);
         // NeverTaken -> falls through to 0x32, no suspend.
         assert_eq!(
             out,
@@ -287,15 +312,9 @@ mod tests {
     fn indirect_branch_resolved_by_oracle_without_suspend() {
         let mut o = ScriptedOracle::default();
         o.indirects.insert(0x50, vec![0x900]);
-        let mut s = Session::new(
-            FakeLifter,
-            RecordingBuilder::new(),
-            NoAssumptions,
-            o,
-            MemoryFacts::new(),
-            0x1000,
-        );
-        let out = s.step(&FakeInsn::with(0x50, 2, "jmp_ind"));
+        let mut s = Session::new(FakeLifter, NoAssumptions, o, MemoryFacts::new(), 0x1000);
+        let mut b = RecordingBuilder::new();
+        let out = s.step(&FakeInsn::with(0x50, 2, "jmp_ind"), &mut b);
         assert_eq!(
             out,
             StepOutcome::BlockEnd(vec![Event::new(
@@ -309,7 +328,8 @@ mod tests {
     #[should_panic(expected = "resume() before step()")]
     fn stepping_while_suspended_panics() {
         let mut s = bare_session();
-        let _ = s.step(&FakeInsn::with(0x30, 2, "jcc 0x40 0x32")); // suspends
-        let _ = s.step(&FakeInsn::nop(0x40)); // misuse
+        let mut b = RecordingBuilder::new();
+        let _ = s.step(&FakeInsn::with(0x30, 2, "jcc 0x40 0x32"), &mut b); // suspends
+        let _ = s.step(&FakeInsn::nop(0x40), &mut b); // misuse
     }
 }
